@@ -28,6 +28,7 @@ library
       Item
       Lib
       Parser
+      Pattern
   other-modules:
       Paths_rush
   hs-source-dirs:

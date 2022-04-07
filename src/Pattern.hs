@@ -1,10 +1,8 @@
 {-# LANGUAGE DeriveFunctor #-}
 
-module Expression (Expr (..)) where
+module Pattern (Pattern (..)) where
 
 import Data.Text
 
-data Expr c
-  = Num Text c
-  | Var Text c
+data Pattern c = Binding Text c
   deriving (Show, Eq, Functor)

@@ -6,7 +6,9 @@ import Control.Monad
 import Data.Function
 import Data.Text hiding (span)
 import Data.Void
+import Expression
 import Item
+import Pattern
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
@@ -20,20 +22,36 @@ data Span = Span SourcePos SourcePos
 type Parser = Parsec Void Text
 
 parseModule :: String -> Text -> Either Text [Item Span]
-parseModule path source = case runParser (many ((many newline *> item) <* many newline)) path source of
+parseModule path source = case result of
   Left error -> Left $ pack $ errorBundlePretty error
   Right a -> Right a
+  where
+    result =
+      runParser
+        (many ((many newline *> item) <* many newline) <* eof)
+        path
+        source
 
 item :: Parser (Item Span)
-item = do
-  ((n, e), s) <- spanned $ (,) <$> (spanned lowerIdent <* eq) <*> expr
-  return $ Constant n e s
+item = try constant <|> try fn
+
+constant :: Parser (Item Span)
+constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
+
+fn :: Parser (Item Span)
+fn = Fn <$> spanned lowerIdent <*> (hspace *> pat) <*> (eq *> expr)
+
+pat :: Parser (Pattern Span)
+pat = uncurry Binding <$> spanned lowerIdent
 
 expr :: Parser (Expr Span)
-expr = num
+expr = num <|> var
 
 num :: Parser (Expr Span)
-num = uncurry Num <$> spanned (pack <$> many digitChar)
+num = uncurry Num <$> spanned (pack <$> some digitChar)
+
+var :: Parser (Expr Span)
+var = uncurry Var <$> spanned lowerIdent
 
 lowerIdent :: Parser Text
 lowerIdent = pack <$> ((:) <$> lowerChar <*> many alphaNumChar)
@@ -49,16 +67,18 @@ spanned p = do
   return (a, Span s e)
 
 {-
- _____         _
-|_   _|__  ___| |_
-  | |/ _ \/ __| __|
-  | |  __/\__ \ |_
-  |_|\___||___/\__|
+ ____
+/ ___| _ __   ___  ___
+\___ \| '_ \ / _ \/ __|
+ ___) | |_) |  __/ (__
+|____/| .__/ \___|\___|
+      |_|
 -}
 
 spec :: IO ()
 spec = Hspec.hspec $ do
   Hspec.describe "parseModule" parseModuleSpec
+  Hspec.describe "fn" fnSpec
   Hspec.describe "constant" constantSpec
   Hspec.describe "lowerIdent" lowerIdentSpec
   Hspec.describe "spanned" spannedSpec
@@ -71,8 +91,15 @@ parseModuleSpec = do
         [ Constant
             ("x", span (1, 1) (1, 2))
             (Num "123" (span (1, 5) (1, 8)))
-            (span (1, 1) (1, 8))
         ]
+
+fnSpec = do
+  item
+    & parses
+      "fn with single binder"
+      "f x = x"
+      as
+      (Fn ("f", ()) (Binding "x" ()) (Var "x" ()))
 
 constantSpec = do
   item
@@ -80,7 +107,7 @@ constantSpec = do
       "constant number"
       "x = 123"
       as
-      (Constant ("x", ()) (Num "123" ()) ())
+      (Constant ("x", ()) (Num "123" ()))
 
 lowerIdentSpec =
   Hspec.it
