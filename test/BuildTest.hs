@@ -17,10 +17,22 @@ buildSpec = do
     let i = ""
     let o = "; ModuleID = 'Lib'"
     build i `shouldContain` o
+
   it "builds constants" $ do
     let i = "x = 123"
     let o = "@x =    global i64 123"
     build i `shouldContain` o
+
+  it "builds constant expr" $ do
+    let i = "x = 1 + 2"
+    let o = "@x =    global i64 add i64 1, 2"
+    build i `shouldContain` o
+
+  it "builds global references" $ do
+    let i = "x = 123\ny = x"
+    let o = "@y =    global i64* @x"
+    build i `shouldContain` o
+
   it "builds functions" $ do
     let i = "f x = x"
     let o =
@@ -28,9 +40,23 @@ buildSpec = do
             ++ "  ret i64 %x_0 \n"
             ++ "}"
     build i `shouldContain` o
-  it "builds global references" $ do
-    let i = "x = 123\ny = x"
-    let o = "@y =    global i64* @x"
+
+  it "builds functions with patterns" $ do
+    let i = "f 1 = 2"
+    let o =
+          "define external ccc  i64 @f(i64  %__a_0)    {\n"
+            ++ "; <label>:0:\n"
+            ++ "  %1 = icmp eq i64 %__a_0, 1 \n"
+            ++ "  br i1 %1, label %continue_0, label %panic_0 \n"
+            ++ "continue_0:\n"
+            ++ "  br label %maybeContinue_0 \n"
+            ++ "panic_0:\n"
+            ++ "   call ccc  void  @panic()  \n"
+            ++ "  br label %maybeContinue_0 \n"
+            ++ "maybeContinue_0:\n"
+            ++ "  %2 = phi i64 [2, %continue_0], [undef, %panic_0] \n"
+            ++ "  ret i64 %2 \n"
+            ++ "}"
     build i `shouldContain` o
 
 build :: Text -> String

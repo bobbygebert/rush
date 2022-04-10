@@ -3,12 +3,13 @@
 module Parser where
 
 import Control.Monad
+import Control.Monad.Combinators.Expr
 import Data.Function
 import Data.Text hiding (span)
 import Data.Void
 import Expression
 import Item
-import Pattern
+import qualified Pattern
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
@@ -41,11 +42,30 @@ constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
 fn :: Parser (Item Span)
 fn = Fn <$> spanned lowerIdent <*> (hspace *> pat) <*> (eq *> expr)
 
-pat :: Parser (Pattern Span)
-pat = uncurry Binding <$> spanned lowerIdent
+pat :: Parser (Pattern.Pattern Span)
+pat = binding <|> numPat
+
+binding :: Parser (Pattern.Pattern Span)
+binding = uncurry Pattern.Binding <$> spanned lowerIdent
+
+numPat :: Parser (Pattern.Pattern Span)
+numPat = uncurry Pattern.Num <$> spanned (pack <$> some digitChar)
 
 expr :: Parser (Expr Span)
-expr = num <|> var
+expr =
+  makeExprParser
+    term
+    [ [binary "+" Add]
+    ]
+  where
+    binary :: Text -> (Expr Span -> Expr Span -> Expr Span) -> Operator Parser (Expr Span)
+    binary s e = InfixL (e <$ (hspace *> string s <* hspace))
+
+term :: Parser (Expr Span)
+term = choice [atom]
+
+atom :: Parser (Expr Span)
+atom = num <|> var
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
@@ -79,7 +99,9 @@ spec :: IO ()
 spec = Hspec.hspec $ do
   Hspec.describe "parseModule" parseModuleSpec
   Hspec.describe "fn" fnSpec
+  Hspec.describe "pat" patSpec
   Hspec.describe "constant" constantSpec
+  Hspec.describe "expr" exprSpec
   Hspec.describe "lowerIdent" lowerIdentSpec
   Hspec.describe "spanned" spannedSpec
 
@@ -94,20 +116,43 @@ parseModuleSpec = do
         ]
 
 fnSpec = do
-  item
+  item <* eof
     & parses
       "fn with single binder"
       "f x = x"
       as
-      (Fn ("f", ()) (Binding "x" ()) (Var "x" ()))
+      (Fn ("f", ()) (Pattern.Binding "x" ()) (Var "x" ()))
+
+patSpec = do
+  pat <* eof
+    & parses
+      "binder pattern"
+      "x"
+      as
+      (Pattern.Binding "x" ())
+
+  pat <* eof
+    & parses
+      "num pattern"
+      "123"
+      as
+      (Pattern.Num "123" ())
 
 constantSpec = do
-  item
+  item <* eof
     & parses
       "constant number"
       "x = 123"
       as
       (Constant ("x", ()) (Num "123" ()))
+
+exprSpec = do
+  expr <* eof
+    & parses
+      "addition"
+      "1 + 2"
+      as
+      (Add (Num "1" ()) (Num "2" ()))
 
 lowerIdentSpec =
   Hspec.it
