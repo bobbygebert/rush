@@ -26,6 +26,7 @@ library
       Ast
       Expression
       Generate
+      Item
       Lib
       Parser
       Pattern

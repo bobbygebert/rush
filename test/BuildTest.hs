@@ -36,17 +36,17 @@ buildSpec = do
   it "builds functions" $ do
     let i = "f x = x"
     let o =
-          "define external ccc  i64 @f(i64  %x_0)    {\n"
-            ++ "  ret i64 %x_0 \n"
+          "define external ccc  i64 @f(i64  %a_0)    {\n"
+            ++ "  ret i64 %a_0 \n"
             ++ "}"
     build i `shouldContain` o
 
   it "builds functions with patterns" $ do
     let i = "f 1 = 2"
     let o =
-          "define external ccc  i64 @f(i64  %__a_0)    {\n"
+          "define external ccc  i64 @f(i64  %a_0)    {\n"
             ++ "; <label>:0:\n"
-            ++ "  %1 = icmp eq i64 %__a_0, 1 \n"
+            ++ "  %1 = icmp eq i64 %a_0, 1 \n"
             ++ "  br i1 %1, label %continue_0, label %panic_0 \n"
             ++ "continue_0:\n"
             ++ "  br label %maybeContinue_0 \n"

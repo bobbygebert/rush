@@ -52,6 +52,7 @@ binding = uncurry Pattern.Binding <$> spanned lowerIdent
 numPat :: Parser (Pattern.Pattern Span)
 numPat = uncurry Pattern.Num <$> spanned (pack <$> some digitChar)
 
+-- TODO: Parse match expressions
 expr :: Parser (Expr Span)
 expr =
   makeExprParser

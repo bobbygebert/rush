@@ -5,7 +5,6 @@
 
 module Generate (buildModule, spec) where
 
-import Ast
 import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State
 import Data.Char
@@ -15,11 +14,12 @@ import Data.String
 import Data.Text hiding (foldr, head, tail)
 import Data.Text.Lazy (toStrict)
 import qualified Expression as Rush
+import Item
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
 import LLVM.AST.CallingConvention
 import LLVM.AST.Constant (Constant (Add))
-import LLVM.AST.Constant hiding (Add, type')
+import LLVM.AST.Constant hiding (Add, ICmp, type')
 import LLVM.AST.Global (Global (Function, GlobalVariable, addrSpace, alignment, basicBlocks, callingConvention, comdat, dllStorageClass, functionAttributes, garbageCollectorName, initializer, isConstant, linkage, metadata, name, parameters, personalityFunction, prefix, returnAttributes, returnType, section, threadLocalMode, type', unnamedAddr, visibility))
 import LLVM.AST.IntegerPredicate
 import LLVM.AST.Linkage
@@ -50,7 +50,7 @@ type Vars = Map.Map Text Operand
 
 type Builder = ModuleBuilderT (ReaderT Vars (State BuilderState))
 
-buildModule :: Show c => String -> [Ast c] -> Module
+buildModule :: Show c => String -> [Item c] -> Module
 buildModule name =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT Map.empty
@@ -66,52 +66,59 @@ withPanic build = do
 panic :: (Monad m, MonadIRBuilder m, MonadReader Vars m, MonadState BuilderState m) => m Operand
 panic = flip call [] =<< lookup "panic"
 
-buildItem :: Show c => Ast c -> Builder Operand
-buildItem = \case
-  Constant (x, _) e -> define x (uncurry (global (fromText x)) =<< val)
-    where
-      val = case e of
-        Rush.Num n _ -> return (i64, parseIntConst n)
-        Rush.Var v _ -> do
-          r <- lookupConst v
-          let t = typeOf r
-          return (t, r)
-        Rush.Add a b -> do
-          a' <- buildConstExpr a
-          b' <- buildConstExpr b
-          return (i64, Add True True a' b')
-  Fn (f, _) (Binding x _) b -> do
+buildItem :: Show c => Item c -> Builder Operand
+buildItem (Item name _ e) = case e of
+  Rush.Num n _ -> defineConstNumber name n
+  Rush.Var v _ -> defineConstRef name v
+  Rush.Add a b -> defineConstIntBinOp name (Add True True) a b
+  Rush.Match {} -> error "Const eval not implemented for match"
+  Rush.Lambda (x, _) b ->
     function
-      (fromText f)
+      (fromText name)
       [(i64, fromText x)]
       i64
       (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
-  Fn (f, _) (Num n _) b -> do
-    x <- fresh
-    let n' = parseInt n
-    function
-      (fromText f)
-      [(i64, fromText x)]
-      i64
-      ( \[x'] -> with [(x, x')] $ mdo
-          matches <- icmp EQ x' n'
-          -- TODO: use `switch` instead
-          condBr matches continueB panicB
-          continueB <- block `named` "continue"
-          continueE <- buildExpr b
-          br maybeContinue
-          panicB <- block `named` "panic"
-          panicE <- panic
-          br maybeContinue
-          maybeContinue <- block `named` "maybeContinue"
-          ret =<< phi [(continueE, continueB), (panicE, panicB)]
-      )
 
-buildExpr :: (MonadReader Vars m, MonadState BuilderState m) => Rush.Expr c -> m Operand
+defineConstNumber name = define name <$> global (fromText name) i64 . parseIntConst
+
+defineConstRef name v = do
+  c <- lookupConst v
+  define name $ global (fromText name) (typeOf c) c
+
+defineConstIntBinOp name op a b = do
+  c <- op <$> buildConstExpr a <*> buildConstExpr b
+  define name $ global (fromText name) i64 c
+
+buildExpr ::
+  ( MonadReader Vars m,
+    MonadState BuilderState m,
+    MonadIRBuilder m,
+    MonadFix m
+  ) =>
+  Rush.Expr c ->
+  m Operand
 buildExpr = \case
   Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
   Rush.Var v _ -> lookup v
-  _ -> error ""
+  Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
+  Rush.Match (x, _) p e -> case p of
+    Binding x' _ -> do
+      x'' <- lookup x
+      with [(x', x'')] $ buildExpr e
+    Num n _ -> mdo
+      let n' = parseInt n
+      x' <- lookup x
+      matches <- icmp EQ x' n'
+      condBr matches continueB panicB
+      continueB <- block `named` "continue"
+      continueE <- buildExpr e
+      br maybeContinue
+      panicB <- block `named` "panic"
+      panicE <- panic
+      br maybeContinue
+      maybeContinue <- block `named` "maybeContinue"
+      phi [(continueE, continueB), (panicE, panicB)]
+  Rush.Lambda (x, _) b -> error "Lambda expressions not implemented."
 
 buildConstExpr :: (MonadReader Vars m, MonadState BuilderState m) => Rush.Expr c -> m Constant
 buildConstExpr = \case
@@ -135,7 +142,7 @@ lookup :: (MonadReader Vars m, MonadState BuilderState m) => Text -> m Operand
 lookup name =
   fromMaybe <$> (fromMaybe (error err) <$> global) <*> local
   where
-    err = unpack name ++ "not found"
+    err = unpack name ++ " not found"
     global = gets $ Map.lookup name . globals
     local = asks $ Map.lookup name
 
@@ -143,7 +150,7 @@ lookupConst :: (MonadReader Vars m, MonadState BuilderState m) => Text -> m Cons
 lookupConst name =
   toConst <$> (fromMaybe <$> (fromMaybe (error err) <$> global) <*> local)
   where
-    err = unpack name ++ "not found"
+    err = unpack name ++ " not found"
     global = gets $ Map.lookup name . globals
     local = asks $ Map.lookup name
     toConst = \case
@@ -174,7 +181,7 @@ spec = hspec $ do
 buildItemSpec = do
   it "builds constant num" $ do
     let env = []
-    let item = Constant ("x", ()) (Rush.Num "123" ())
+    let item = Item "x" () (Rush.Num "123" ())
     let output =
           ( ConstantOperand
               (GlobalReference (PointerType i64 (AddrSpace 0)) (Name "x")),
@@ -202,7 +209,7 @@ buildItemSpec = do
 
   it "builds constant ref" $ do
     let env = [("y", ConstantOperand (Int 64 123))]
-    let item = Constant ("x", ()) (Rush.Var "y" ())
+    let item = Item "x" () (Rush.Var "y" ())
     let output =
           ( ConstantOperand
               (GlobalReference (PointerType i64 (AddrSpace 0)) (Name "x")),
@@ -230,7 +237,7 @@ buildItemSpec = do
 
   it "builds constant expr" $ do
     let env = []
-    let item = Constant ("x", ()) (Rush.Add (Rush.Num "1" ()) (Rush.Num "2" ()))
+    let item = Item "x" () (Rush.Add (Rush.Num "1" ()) (Rush.Num "2" ()))
     let output =
           ( ConstantOperand
               (GlobalReference (PointerType i64 (AddrSpace 0)) (Name "x")),
@@ -258,7 +265,7 @@ buildItemSpec = do
 
   it "builds fn" $ do
     let env = []
-    let item = Fn ("x", ()) (Binding "x" ()) (Rush.Var "x" ())
+    let item = Item "f" () (Rush.Lambda ("x", ()) (Rush.Match ("x", ()) (Binding "x" ()) (Rush.Var "x" ())))
     let output =
           ( ConstantOperand
               ( GlobalReference
@@ -270,7 +277,7 @@ buildItemSpec = do
                         }
                       (AddrSpace 0)
                   )
-                  (Name "x")
+                  (Name "f")
               ),
             [ GlobalDefinition
                 ( Function
@@ -280,7 +287,7 @@ buildItemSpec = do
                       callingConvention = C,
                       returnAttributes = [],
                       returnType = i64,
-                      name = Name "x",
+                      name = Name "f",
                       parameters = ([Parameter i64 (Name "x_0") []], False),
                       functionAttributes = [],
                       section = Nothing,
@@ -321,16 +328,77 @@ buildExprSpec = do
     let output = (ConstantOperand (Int 64 123), [])
     runBuildExpr env expr `shouldBe` output
 
-runBuildItem :: Show c => [(Text, Operand)] -> Ast c -> (Operand, [Definition])
+  it "builds match" $ do
+    let env = [("x", ConstantOperand (Int 64 123))]
+    let expr = Rush.Match ("x", ()) (Num "123" ()) (Rush.Num "456" ())
+    let output =
+          ( LocalReference (IntegerType 64) (UnName 2),
+            [ BasicBlock
+                (UnName 0)
+                [UnName 1 := ICmp EQ (ConstantOperand (Int 64 123)) (ConstantOperand (Int 64 123)) []]
+                (Do (CondBr (LocalReference (IntegerType 1) (UnName 1)) (Name "continue_0") (Name "panic_0") [])),
+              BasicBlock (Name "continue_0") [] (Do (Br (Name "maybeContinue_0") [])),
+              BasicBlock (Name "panic_0") [undefinedPanic] (Do (Br (Name "maybeContinue_0") [])),
+              BasicBlock
+                (Name "maybeContinue_0")
+                [ UnName 2
+                    := Phi
+                      (IntegerType 64)
+                      [ (ConstantOperand (Int 64 456), Name "continue_0"),
+                        (ConstantOperand (Undef VoidType), Name "panic_0")
+                      ]
+                      []
+                ]
+                (Do (Ret Nothing []))
+            ]
+          )
+    runBuildExpr env expr `shouldBe` output
+
+runBuildItem :: Show c => [(Text, Operand)] -> Item c -> (Operand, [Definition])
 runBuildItem env =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT (Map.fromList env)
     . runModuleBuilderT emptyModuleBuilder
     . buildItem
 
-runBuildExpr :: Show c => [(Text, Operand)] -> Rush.Expr c -> (Operand, [Definition])
+runBuildExpr :: Show c => [(Text, Operand)] -> Rush.Expr c -> (Operand, [BasicBlock])
 runBuildExpr env =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT (Map.fromList env)
-    . runModuleBuilderT emptyModuleBuilder
+    . runIRBuilderT emptyIRBuilder
+    . with
+      [ ( "panic",
+          ConstantOperand
+            ( GlobalReference
+                ( PointerType
+                    FunctionType
+                      { resultType = VoidType,
+                        argumentTypes = [],
+                        isVarArg = False
+                      }
+                    (AddrSpace 0)
+                )
+                (Name "panic")
+            )
+        )
+      ]
     . buildExpr
+
+undefinedPanic =
+  Do
+    ( Call
+        Nothing
+        C
+        []
+        ( Right
+            ( ConstantOperand
+                ( GlobalReference
+                    (PointerType (FunctionType VoidType [] False) (AddrSpace 0))
+                    (Name "panic")
+                )
+            )
+        )
+        []
+        []
+        []
+    )
