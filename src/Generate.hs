@@ -2,13 +2,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecursiveDo #-}
-{-# HLINT ignore "Use newtype instead of data" #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-
-{-# HLINT ignore "Use <=<" #-}
 
 module Generate (buildModule, spec) where
 
+import Ast
 import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State
 import Data.Char
@@ -18,7 +15,6 @@ import Data.String
 import Data.Text hiding (foldr, head, tail)
 import Data.Text.Lazy (toStrict)
 import qualified Expression as Rush
-import Item
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
 import LLVM.AST.CallingConvention
@@ -54,7 +50,7 @@ type Vars = Map.Map Text Operand
 
 type Builder = ModuleBuilderT (ReaderT Vars (State BuilderState))
 
-buildModule :: Show c => String -> [Item c] -> Module
+buildModule :: Show c => String -> [Ast c] -> Module
 buildModule name =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT Map.empty
@@ -70,7 +66,7 @@ withPanic build = do
 panic :: (Monad m, MonadIRBuilder m, MonadReader Vars m, MonadState BuilderState m) => m Operand
 panic = flip call [] =<< lookup "panic"
 
-buildItem :: Show c => Item c -> Builder Operand
+buildItem :: Show c => Ast c -> Builder Operand
 buildItem = \case
   Constant (x, _) e -> define x (uncurry (global (fromText x)) =<< val)
     where
@@ -325,7 +321,7 @@ buildExprSpec = do
     let output = (ConstantOperand (Int 64 123), [])
     runBuildExpr env expr `shouldBe` output
 
-runBuildItem :: Show c => [(Text, Operand)] -> Item c -> (Operand, [Definition])
+runBuildItem :: Show c => [(Text, Operand)] -> Ast c -> (Operand, [Definition])
 runBuildItem env =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT (Map.fromList env)

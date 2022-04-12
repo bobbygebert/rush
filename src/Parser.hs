@@ -2,13 +2,14 @@
 
 module Parser where
 
+import Ast
 import Control.Monad
 import Control.Monad.Combinators.Expr
 import Data.Function
+import qualified Data.Set as Set
 import Data.Text hiding (span)
 import Data.Void
 import Expression
-import Item
 import qualified Pattern
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
@@ -22,7 +23,7 @@ data Span = Span SourcePos SourcePos
 
 type Parser = Parsec Void Text
 
-parseModule :: String -> Text -> Either Text [Item Span]
+parseModule :: String -> Text -> Either Text [Ast Span]
 parseModule path source = case result of
   Left error -> Left $ pack $ errorBundlePretty error
   Right a -> Right a
@@ -33,13 +34,13 @@ parseModule path source = case result of
         path
         source
 
-item :: Parser (Item Span)
+item :: Parser (Ast Span)
 item = try constant <|> try fn
 
-constant :: Parser (Item Span)
+constant :: Parser (Ast Span)
 constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
 
-fn :: Parser (Item Span)
+fn :: Parser (Ast Span)
 fn = Fn <$> spanned lowerIdent <*> (hspace *> pat) <*> (eq *> expr)
 
 pat :: Parser (Pattern.Pattern Span)
