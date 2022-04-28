@@ -80,6 +80,8 @@ test-suite rush-test
   build-depends:
       base >=4.7 && <5
     , hspec
+    , process
     , rush
+    , temporary
     , text
   default-language: Haskell2010

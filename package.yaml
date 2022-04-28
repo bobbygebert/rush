@@ -60,5 +60,7 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - hspec
+    - process
     - rush
+    - temporary
     - text
