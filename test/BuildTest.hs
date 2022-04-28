@@ -59,8 +59,20 @@ buildSpec = do
             ++ "}"
     build i `shouldContain` o
 
-build :: Text -> String
-build = unpack . unwrap . Lib.build "Lib.rush"
+  it "builds function calls" $ do
+    let i =
+          ""
+            ++ "g x = x\n"
+            ++ "f x = g x"
+    let o =
+          "define external ccc  i64 @f(i64  %a_0)    {\n"
+            ++ "  %1 =  call ccc  i64  @g(i64  %a_0)  \n"
+            ++ "  ret i64 %1 \n"
+            ++ "}"
+    build i `shouldContain` o
+
+build :: String -> String
+build = unpack . unwrap . Lib.build "Lib.rush" . pack
 
 unwrap :: (Show err) => Either err ok -> ok
 unwrap (Left err) = error $ show err

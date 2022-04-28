@@ -4,6 +4,7 @@
 {-# HLINT ignore "Use newtype instead of data" #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 module Infer where
@@ -22,7 +23,7 @@ type Name = Text
 type TypeError = Text
 
 data Constraint t = (:~) t t
-  deriving (Functor)
+  deriving (Show, Functor)
 
 infix 1 :~
 
@@ -48,6 +49,10 @@ class Refinable a t where
 
 class Template a where
   freeTypeVars :: a -> Set.Set Name
+  instantiate ::
+    (MonadState [Span -> t] m, Refinable a t) =>
+    a ->
+    InferT m a a
 
 runInfer :: [Span -> t] -> Context t -> Infer t a -> Either TypeError (a, [Constraint t])
 runInfer typeVars env =
@@ -56,7 +61,7 @@ runInfer typeVars env =
     . runExceptT
     . runWriterT
 
-solveConstraints :: (Unifiable t, Refinable t t) => [Constraint t] -> Either TypeError (Substitutions t)
+solveConstraints :: (Unifiable t, Refinable t t, Show t) => [Constraint t] -> Either TypeError (Substitutions t)
 solveConstraints constraints = runExcept $ solve (Substitutions Map.empty) constraints
   where
     solve ss cs = case cs of
@@ -89,11 +94,14 @@ bind v t
   | v `Set.member` freeTypeVars t = throwError $ pack $ "binding failed: " ++ show (v, t)
   | otherwise = return (Substitutions $ Map.singleton v t)
 
-lookup :: (Show t, Monad m) => Name -> InferT m t t
+lookup ::
+  (Show t, Refinable t t, Unifiable t, Template t, MonadState [Span -> t] m) =>
+  Name ->
+  InferT m t t
 lookup v =
   asks (Map.lookup v . locals) >>= \case
     Nothing -> throwError . pack $ show v ++ " is undefined"
-    Just s -> pure s
+    Just s -> instantiate s
 
 with :: Monad m => [(Name, t)] -> InferT m t a -> InferT m t a
 with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
@@ -114,3 +122,4 @@ instance (Functor f, Refinable t t) => Refinable (f t) t where
 
 instance (Foldable f, Template t) => Template (f t) where
   freeTypeVars = foldr (Set.union . freeTypeVars) Set.empty
+  instantiate = error "Not implemented"

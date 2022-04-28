@@ -73,11 +73,12 @@ buildItem (Item name _ e) = case e of
   Rush.Add a b -> defineConstIntBinOp name (Add True True) a b
   Rush.Match {} -> error "Const match not implemented"
   Rush.Lambda (x, _) b ->
-    function
-      (fromText name)
-      [(i64, fromText x)]
-      i64
-      (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
+    define name $
+      function
+        (fromText name)
+        [(i64, fromText x)]
+        i64
+        (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
   Rush.App {} -> error "Const function application not implemented"
 
 defineConstNumber name = define name <$> global (fromText name) i64 . parseIntConst

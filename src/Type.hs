@@ -51,13 +51,6 @@ typeItem context (Item n s e) = normalize <$> (solve =<< infer)
         tvs = Set.toList (freeTypeVars item)
         ss = Map.fromList $ zip tvs (freshTypeVars <*> repeat (spanOf ty))
 
--- TODO: merge spans.
-spanOf :: Type -> Span
-spanOf = \case
-  TInt s -> s
-  TVar _ s -> s
-  a :-> b -> spanOf a
-
 typeExpr :: Expr Span -> Infer Type (Expr Type)
 typeExpr = \case
   Num n c -> pure $ Num n (TInt c)
@@ -87,12 +80,6 @@ typeOf = \case
   Lambda (_, tx) b -> tx :-> typeOf b
   App ty f x -> ty
 
-withSpan :: Span -> Type -> Type
-withSpan s = \case
-  TInt _ -> TInt s
-  TVar v _ -> TVar v s
-  a :-> b -> withSpan s a :-> withSpan s b
-
 bindings :: Pattern.Pattern Type -> [(Text, Type)]
 bindings = \case
   Pattern.Binding x tx -> [(x, tx)]
@@ -106,12 +93,20 @@ typePattern = \case
 freshTypeVars :: [Span -> Type]
 freshTypeVars = TVar . pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
+spanOf :: Type -> Span
+spanOf = \case
+  TInt s -> s
+  TVar _ s -> s
+  a :-> b -> spanOf a
+
+withSpan :: Span -> Type -> Type
+withSpan s = \case
+  TInt _ -> TInt s
+  TVar v _ -> TVar v s
+  a :-> b -> withSpan s a :-> withSpan s b
+
 instance Refinable Type Type where
-  apply (Substitutions ss) t@(TVar v s) = withSpan s $ replace' t (Map.findWithDefault t v ss)
-    where
-      replace' t t' | withSpan emptySpan t == withSpan emptySpan t' = t
-      replace' _ t'@(TVar v' s) = replace' t' (Map.findWithDefault t' v' ss)
-      replace' _ t' = apply (Substitutions ss) t'
+  apply (Substitutions ss) t@(TVar v s) = withSpan s (Map.findWithDefault t v ss)
   apply ss (a :-> b) = apply ss a :-> apply ss b
   apply _ t@TInt {} = t
 
@@ -130,6 +125,15 @@ instance Template Type where
     TInt _ -> Set.empty
     a :-> b -> freeTypeVars a `Set.union` freeTypeVars b
     TVar v _ -> Set.singleton v
+
+  instantiate ty = do
+    let vs = Set.toList $ freeTypeVars ty
+    vs' <- forM vs $ const (fresh (spanOf ty))
+    let s = Substitutions $ Map.fromList $ zip vs vs'
+    return $ case ty of
+      TInt {} -> ty
+      TVar {} -> ty
+      a :-> b -> apply s a :-> apply s b
 
 {-
  ____
