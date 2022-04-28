@@ -71,14 +71,14 @@ buildItem (Item name _ e) = case e of
   Rush.Num n _ -> defineConstNumber name n
   Rush.Var v _ -> defineConstRef name v
   Rush.Add a b -> defineConstIntBinOp name (Add True True) a b
-  Rush.Match {} -> error "Const eval not implemented for match"
+  Rush.Match {} -> error "Const match not implemented"
   Rush.Lambda (x, _) b ->
     function
       (fromText name)
       [(i64, fromText x)]
       i64
       (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
-  Rush.App {} -> error "Function application not implemented"
+  Rush.App {} -> error "Const function application not implemented"
 
 defineConstNumber name = define name <$> global (fromText name) i64 . parseIntConst
 
@@ -121,7 +121,10 @@ buildExpr = \case
       phi [(continueE, continueB), (panicE, panicB)]
   Rush.Match {} -> error "Match on expressions not implemented."
   Rush.Lambda (x, _) b -> error "Lambda expressions not implemented."
-  Rush.App {} -> error "Function application not implemented"
+  Rush.App _ f x -> do
+    f' <- buildExpr f
+    x <- buildExpr x
+    call f' [(x, [])]
 
 buildConstExpr :: (MonadReader Vars m, MonadState BuilderState m) => Rush.Expr c -> m Constant
 buildConstExpr = \case
@@ -357,6 +360,36 @@ buildExprSpec = do
           )
     runBuildExpr env expr `shouldBe` output
 
+  it "builds app" $ do
+    let env =
+          [ ( "f",
+              ConstantOperand
+                ( GlobalReference
+                    (PointerType (FunctionType i64 [i64] False) (AddrSpace 0))
+                    (Name "f")
+                )
+            )
+          ]
+    let expr = Rush.App () (Rush.Var "f" ()) (Rush.Num "123" ())
+    let output =
+          ( LocalReference (IntegerType 64) (UnName 1),
+            [ BasicBlock
+                (UnName 0)
+                [ UnName 1
+                    := Call
+                      Nothing
+                      C
+                      []
+                      (Right (ConstantOperand (GlobalReference (PointerType (FunctionType (IntegerType 64) [IntegerType 64] False) (AddrSpace 0)) (Name "f"))))
+                      [(ConstantOperand (Int 64 123), [])]
+                      []
+                      []
+                ]
+                (Do (Ret Nothing []))
+            ]
+          )
+    runBuildExpr env expr `shouldBe` output
+
 runBuildItem :: Show c => [(Text, Operand)] -> Item c -> (Operand, [Definition])
 runBuildItem env =
   flip evalState (BuilderState Map.empty freshNames)
@@ -373,14 +406,7 @@ runBuildExpr env =
       [ ( "panic",
           ConstantOperand
             ( GlobalReference
-                ( PointerType
-                    FunctionType
-                      { resultType = VoidType,
-                        argumentTypes = [],
-                        isVarArg = False
-                      }
-                    (AddrSpace 0)
-                )
+                (PointerType (FunctionType VoidType [] False) (AddrSpace 0))
                 (Name "panic")
             )
         )
