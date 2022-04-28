@@ -14,7 +14,7 @@ import Data.String
 import Data.Text hiding (foldr, head, tail)
 import Data.Text.Lazy (toStrict)
 import qualified Expression as Rush
-import Item
+import Item hiding (name)
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
 import LLVM.AST.CallingConvention
@@ -78,6 +78,7 @@ buildItem (Item name _ e) = case e of
       [(i64, fromText x)]
       i64
       (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
+  Rush.App {} -> error "Function application not implemented"
 
 defineConstNumber name = define name <$> global (fromText name) i64 . parseIntConst
 
@@ -101,7 +102,7 @@ buildExpr = \case
   Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
   Rush.Var v _ -> lookup v
   Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
-  Rush.Match (x, _) p e -> case p of
+  Rush.Match (Rush.Var x _) p e -> case p of
     Binding x' _ -> do
       x'' <- lookup x
       with [(x', x'')] $ buildExpr e
@@ -118,7 +119,9 @@ buildExpr = \case
       br maybeContinue
       maybeContinue <- block `named` "maybeContinue"
       phi [(continueE, continueB), (panicE, panicB)]
+  Rush.Match {} -> error "Match on expressions not implemented."
   Rush.Lambda (x, _) b -> error "Lambda expressions not implemented."
+  Rush.App {} -> error "Function application not implemented"
 
 buildConstExpr :: (MonadReader Vars m, MonadState BuilderState m) => Rush.Expr c -> m Constant
 buildConstExpr = \case
@@ -265,7 +268,7 @@ buildItemSpec = do
 
   it "builds fn" $ do
     let env = []
-    let item = Item "f" () (Rush.Lambda ("x", ()) (Rush.Match ("x", ()) (Binding "x" ()) (Rush.Var "x" ())))
+    let item = Item "f" () (Rush.Lambda ("x", ()) (Rush.Match (Rush.Var "x" ()) (Binding "x" ()) (Rush.Var "x" ())))
     let output =
           ( ConstantOperand
               ( GlobalReference
@@ -330,7 +333,7 @@ buildExprSpec = do
 
   it "builds match" $ do
     let env = [("x", ConstantOperand (Int 64 123))]
-    let expr = Rush.Match ("x", ()) (Num "123" ()) (Rush.Num "456" ())
+    let expr = Rush.Match (Rush.Var "x" ()) (Num "123" ()) (Rush.Num "456" ())
     let output =
           ( LocalReference (IntegerType 64) (UnName 2),
             [ BasicBlock

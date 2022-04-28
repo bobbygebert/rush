@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 
 module Ast (Ast (..)) where
@@ -9,4 +10,4 @@ import Pattern
 data Ast c
   = Constant (Text, c) (Expr c)
   | Fn (Text, c) (Pattern c) (Expr c)
-  deriving (Show, Eq, Functor)
+  deriving (Show, Eq, Foldable, Functor)

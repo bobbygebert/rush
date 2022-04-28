@@ -26,10 +26,12 @@ library
       Ast
       Expression
       Generate
+      Infer
       Item
       Lib
       Parser
       Pattern
+      Type
   other-modules:
       Paths_rush
   hs-source-dirs:

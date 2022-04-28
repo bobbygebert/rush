@@ -21,6 +21,14 @@ import Prelude hiding (span)
 data Span = Span SourcePos SourcePos
   deriving (Show, Eq)
 
+class Spanned a
+
+emptySpan :: Span
+emptySpan =
+  Span
+    (SourcePos "" (mkPos 1) (mkPos 1))
+    (SourcePos "" (mkPos 1) (mkPos 1))
+
 type Parser = Parsec Void Text
 
 parseModule :: String -> Text -> Either Text [Ast Span]
@@ -52,6 +60,14 @@ binding = uncurry Pattern.Binding <$> spanned lowerIdent
 numPat :: Parser (Pattern.Pattern Span)
 numPat = uncurry Pattern.Num <$> spanned (pack <$> some digitChar)
 
+app :: Parser (Expr Span)
+app = do
+  s <- getSourcePos
+  f <- atom
+  x <- hspace *> atom
+  e <- getSourcePos
+  return $ App (Span s e) f x
+
 -- TODO: Parse match expressions
 expr :: Parser (Expr Span)
 expr =
@@ -64,7 +80,7 @@ expr =
     binary s e = InfixL (e <$ (hspace *> string s <* hspace))
 
 term :: Parser (Expr Span)
-term = choice [atom]
+term = choice [try app, atom]
 
 atom :: Parser (Expr Span)
 atom = num <|> var
@@ -101,6 +117,7 @@ spec :: IO ()
 spec = Hspec.hspec $ do
   Hspec.describe "parseModule" parseModuleSpec
   Hspec.describe "fn" fnSpec
+  Hspec.describe "app" appSpec
   Hspec.describe "pat" patSpec
   Hspec.describe "constant" constantSpec
   Hspec.describe "expr" exprSpec
@@ -124,6 +141,14 @@ fnSpec = do
       "f x = x"
       as
       (Fn ("f", ()) (Pattern.Binding "x" ()) (Var "x" ()))
+
+appSpec = do
+  item <* eof
+    & parses
+      "fn application"
+      "f g = g 1"
+      as
+      (Fn ("f", ()) (Pattern.Binding "g" ()) (App () (Var "g" ()) (Num "1" ())))
 
 patSpec = do
   pat <* eof

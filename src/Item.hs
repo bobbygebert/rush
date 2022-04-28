@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 
@@ -9,8 +10,8 @@ import Data.Text
 import Expression
 import qualified Pattern
 
-data Item c = Item Text c (Expr c)
-  deriving (Show, Eq, Functor)
+data Item c = Item {name :: Text, ty :: c, value :: Expr c}
+  deriving (Show, Eq, Foldable, Functor)
 
 desugar :: Ast c -> Item c
 desugar = \case
@@ -18,7 +19,7 @@ desugar = \case
   Fn (n, c) p b -> Item n c (desugarFnPat freshNames p b)
 
 desugarFnPat :: [Text] -> Pattern.Pattern c -> Expr c -> Expr c
-desugarFnPat (x : xs) p b = Lambda (x, c) (Match (x, c) p b)
+desugarFnPat (x : xs) p b = Lambda (x, c) (Match (Var x c) p b)
   where
     c = case p of
       Pattern.Binding _ c' -> c'

@@ -2,8 +2,8 @@
 
 module Main where
 
-import qualified Data.Text.IO as Text
 import Data.Text
+import qualified Data.Text.IO as Text
 import Lib
 import Options.Applicative
 import System.Exit (exitFailure)
@@ -37,9 +37,9 @@ getCommand =
         )
         <**> helper
 
-try :: Either Text ok -> IO ok
+try :: Either [Text] ok -> IO ok
 try = \case
-  Left err -> const exitFailure =<< Text.hPutStrLn stderr err
+  Left err -> const exitFailure =<< mapM (Text.hPutStrLn stderr) err
   Right ok -> pure ok
 
 versionCommand :: ParserInfo Command
