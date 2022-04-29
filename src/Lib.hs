@@ -3,6 +3,7 @@
 module Lib (build) where
 
 import Ast
+import Constant (Constant, Named (Named))
 import Control.Arrow hiding (first)
 import Data.Bifunctor
 import Data.Either (partitionEithers)
@@ -11,6 +12,7 @@ import Data.Functor
 import qualified Data.Map as Map
 import Data.Text
 import Data.Text.Lazy (toStrict)
+import Eval
 import Generate
 import Infer (Context (Context, locals), TypeError)
 import Item
@@ -25,7 +27,19 @@ build path source =
   toStrict
     . ppllvm
     . buildModule (takeBaseName path)
+    . reduce
     <$> (inferAndCheck . fmap desugar =<< parse path source)
+
+reduce :: [Item Type] -> [Named]
+reduce = reduce' emptyContext
+  where
+    reduce' :: Context Constant -> [Item Type] -> [Named]
+    reduce' ctx = \case
+      [] -> []
+      (Item name _ value) : is -> Named name c : reduce' ctx' is
+        where
+          c = eval ctx value
+          ctx' = Context (Map.insert name c (locals ctx))
 
 inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
 inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' emptyContext

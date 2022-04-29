@@ -5,6 +5,7 @@
 
 module Generate (buildModule) where
 
+import qualified Constant
 import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State
 import Data.Char
@@ -14,7 +15,7 @@ import Data.String
 import Data.Text hiding (foldr, head, tail)
 import Data.Text.Lazy (toStrict)
 import qualified Expression as Rush
-import Item hiding (name)
+--import Item hiding (name)
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
 import LLVM.AST.CallingConvention
@@ -50,7 +51,7 @@ type Vars = Map.Map Text Operand
 
 type Builder = ModuleBuilderT (ReaderT Vars (State BuilderState))
 
-buildModule :: Show c => String -> [Item c] -> Module
+buildModule :: String -> [Constant.Named] -> Module
 buildModule name =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT Map.empty
@@ -66,30 +67,19 @@ withPanic build = do
 panic :: (Monad m, MonadIRBuilder m, MonadReader Vars m, MonadState BuilderState m) => m Operand
 panic = flip call [] =<< lookup "panic"
 
-buildItem :: Show c => Item c -> Builder Operand
-buildItem (Item name _ e) = case e of
-  Rush.Num n _ -> defineConstNumber name n
-  Rush.Var v _ -> defineConstRef name v
-  Rush.Add a b -> defineConstIntBinOp name (Add True True) a b
-  Rush.Match {} -> error "Const match not implemented"
-  Rush.Lambda (x, _) b ->
+buildItem :: Constant.Named -> Builder Operand
+buildItem (Constant.Named name e) = case e of
+  Constant.Num n _ ->
+    define name
+      <$> global (fromText name) i64
+      $ parseIntConst n
+  Constant.Lambda (x, _) b ->
     define name $
       function
         (fromText name)
         [(i64, fromText x)]
         i64
         (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
-  Rush.App {} -> error "Const function application not implemented"
-
-defineConstNumber name = define name <$> global (fromText name) i64 . parseIntConst
-
-defineConstRef name v = do
-  c <- lookupConst v
-  define name $ global (fromText name) (typeOf c) c
-
-defineConstIntBinOp name op a b = do
-  c <- op <$> buildConstExpr a <*> buildConstExpr b
-  define name $ global (fromText name) i64 c
 
 buildExpr ::
   ( MonadReader Vars m,
@@ -127,12 +117,6 @@ buildExpr = \case
     x <- buildExpr x
     call f' [(x, [])]
 
-buildConstExpr :: (MonadReader Vars m, MonadState BuilderState m) => Rush.Expr c -> m Constant
-buildConstExpr = \case
-  Rush.Num n _ -> pure $ parseIntConst n
-  Rush.Var v _ -> lookupConst v
-  _ -> error ""
-
 parseInt :: Text -> Operand
 parseInt = ConstantOperand . parseIntConst
 
@@ -152,17 +136,6 @@ lookup name =
     err = unpack name ++ " not found"
     global = gets $ Map.lookup name . globals
     local = asks $ Map.lookup name
-
-lookupConst :: (MonadReader Vars m, MonadState BuilderState m) => Text -> m Constant
-lookupConst name =
-  toConst <$> (fromMaybe <$> (fromMaybe (error err) <$> global) <*> local)
-  where
-    err = unpack name ++ " not found"
-    global = gets $ Map.lookup name . globals
-    local = asks $ Map.lookup name
-    toConst = \case
-      (ConstantOperand c) -> c
-      _ -> error "Unreachable"
 
 define :: (MonadState BuilderState m) => Text -> m Operand -> m Operand
 define name op = do

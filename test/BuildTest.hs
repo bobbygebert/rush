@@ -76,22 +76,20 @@ buildSpec = do
     o <- evalInt r d "x"
     o `shouldBe` "123"
 
-  -- TODO: cont eval
-  --it "builds constant expr" $ do
-  --  r <- rush ["x = 1 + 2"]
-  --  d <- decl ["int64_t x;"]
-  --  o <- evalInt r d "x"
-  --  o `shouldBe` "3"
+  it "builds constant expr" $ do
+    r <- rush ["x = 1 + 2"]
+    d <- decl ["int64_t x;"]
+    o <- evalInt r d "x"
+    o `shouldBe` "3"
 
-  -- TODO: Elminate pointer
   it "builds global references" $ do
     r <-
       rush
         [ "x = 123",
           "y = x"
         ]
-    d <- decl ["int64_t *y;"]
-    o <- evalInt r d "*y"
+    d <- decl ["int64_t y;"]
+    o <- evalInt r d "y"
     o `shouldBe` "123"
 
   it "builds simple functions taking and returning Int" $ do
