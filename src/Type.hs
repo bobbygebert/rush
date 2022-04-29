@@ -12,7 +12,7 @@ import Control.Monad
 import Control.Monad.Except
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.Text hiding (zip)
+import Data.Text hiding (foldr, zip)
 import Expression
 import GHC.RTS.Flags (ProfFlags (descrSelector))
 import Infer hiding (Type)
@@ -56,11 +56,13 @@ typeExpr = \case
   Num n c -> pure $ Num n (TInt c)
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> Add <$> typeExpr a <*> typeExpr b
-  Match x p b -> do
-    x' <- typeExpr x
-    p' <- typePattern p
-    b' <- with (bindings p') (typeExpr b)
-    return $ Match x' p' b'
+  -- TODO: unify tx and tp
+  Match xs [ps] b -> do
+    xs' <- mapM typeExpr xs
+    ps' <- mapM typePattern ps
+    b' <- with (bindings =<< ps') (typeExpr b)
+    return $ Match xs' [ps'] b'
+  Match xs ps b -> error "todo"
   Lambda (x, s) b -> do
     tx <- fresh s
     Lambda (x, tx) <$> with [(x, tx)] (typeExpr b)
@@ -76,7 +78,7 @@ typeOf = \case
   Num _ ty -> ty
   Var _ ty -> ty
   Add a _ -> typeOf a
-  Match x _ b -> typeOf x :-> typeOf b
+  Match xs ps b -> foldr ((:->) . typeOf) (typeOf b) xs
   Lambda (_, tx) b -> tx :-> typeOf b
   App ty f x -> ty
 
@@ -190,14 +192,14 @@ spec = describe "Type" $ do
 
     it "infers type of Match Expression" $ do
       let c = Context $ Map.fromList [("x", TInt s4)]
-      let i = Item "f" s0 (Match (Var "x" s1) (Pattern.Num "1" s2) (Num "2" s3))
+      let i = Item "f" s0 (Match [Var "x" s1] [[Pattern.Num "1" s2]] (Num "2" s3))
       let o =
             Item
               "f"
               (TInt s0 :-> TInt s0)
               ( Match
-                  (Var "x" (TInt s1))
-                  (Pattern.Num "1" (TInt s2))
+                  [Var "x" (TInt s1)]
+                  [[Pattern.Num "1" (TInt s2)]]
                   (Num "2" (TInt s3))
               )
       typeItem c i `shouldBe` Right o

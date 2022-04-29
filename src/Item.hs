@@ -6,7 +6,7 @@ module Item (desugar, Item (..)) where
 
 import Ast
 import Control.Monad
-import Data.Text
+import Data.Text hiding (foldr, zip)
 import Expression
 import qualified Pattern
 
@@ -16,15 +16,18 @@ data Item c = Item {name :: Text, ty :: c, value :: Expr c}
 desugar :: Ast c -> Item c
 desugar = \case
   Constant (n, c) e -> Item n c e
-  Fn (n, c) p b -> Item n c (desugarFnPat freshNames p b)
+  Fn (n, c) ps b -> Item n c (desugarFnPat freshNames ps b)
 
-desugarFnPat :: [Text] -> Pattern.Pattern c -> Expr c -> Expr c
-desugarFnPat (x : xs) p b = Lambda (x, c) (Match (Var x c) p b)
+desugarFnPat :: [Text] -> [Pattern.Pattern c] -> Expr c -> Expr c
+desugarFnPat fresh ps b = close vars
   where
-    c = case p of
+    close [] = Match (uncurry Var <$> vars) [ps] b
+    close ((x, c) : vs) = Lambda (x, c) (close vs)
+    vars = zip fresh cs
+    cs = getC <$> ps
+    getC = \case
       Pattern.Binding _ c' -> c'
       Pattern.Num _ c' -> c'
-desugarFnPat _ _ _ = error "unreachable"
 
 freshNames :: [Text]
 freshNames = pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])

@@ -49,7 +49,10 @@ constant :: Parser (Ast Span)
 constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
 
 fn :: Parser (Ast Span)
-fn = Fn <$> spanned lowerIdent <*> (hspace *> pat) <*> (eq *> expr)
+fn = Fn <$> spanned lowerIdent <*> (hspace *> pats) <*> (eq *> expr)
+
+pats :: Parser [Pattern.Pattern Span]
+pats = (:) <$> pat <*> many (try (hspace *> pat))
 
 pat :: Parser (Pattern.Pattern Span)
 pat = binding <|> numPat
@@ -140,7 +143,14 @@ fnSpec = do
       "fn with single binder"
       "f x = x"
       as
-      (Fn ("f", ()) (Pattern.Binding "x" ()) (Var "x" ()))
+      (Fn ("f", ()) [Pattern.Binding "x" ()] (Var "x" ()))
+
+  item <* eof
+    & parses
+      "fn with multiple parameters"
+      "f x 123 = x"
+      as
+      (Fn ("f", ()) [Pattern.Binding "x" (), Pattern.Num "123" ()] (Var "x" ()))
 
 appSpec = do
   item <* eof
@@ -148,7 +158,7 @@ appSpec = do
       "fn application"
       "f g = g 1"
       as
-      (Fn ("f", ()) (Pattern.Binding "g" ()) (App () (Var "g" ()) (Num "1" ())))
+      (Fn ("f", ()) [Pattern.Binding "g" ()] (App () (Var "g" ()) (Num "1" ())))
 
 patSpec = do
   pat <* eof
