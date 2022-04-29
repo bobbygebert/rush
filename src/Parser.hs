@@ -113,8 +113,8 @@ spanned p = do
       |_|
 -}
 
-spec :: IO ()
-spec = Hspec.hspec $ do
+spec :: Hspec.SpecWith ()
+spec = Hspec.describe "Parser" $ do
   Hspec.describe "parseModule" parseModuleSpec
   Hspec.describe "fn" fnSpec
   Hspec.describe "app" appSpec

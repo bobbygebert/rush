@@ -42,8 +42,8 @@ lookup ctx = fromMaybe (error "unreachable") . flip Map.lookup (locals ctx)
       |_|
 -}
 
-spec :: IO ()
-spec = hspec $ do
+spec :: SpecWith ()
+spec = describe "Eval" $ do
   it "evaluates addition" $ do
     eval
       emptyContext

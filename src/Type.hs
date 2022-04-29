@@ -154,8 +154,8 @@ s3 = Parser.span (3, 3) (3, 3)
 
 s4 = Parser.span (4, 4) (4, 4)
 
-spec :: IO ()
-spec = hspec $ do
+spec :: SpecWith ()
+spec = describe "Type" $ do
   describe "typeItem" $ do
     it "infers type of Num to be TInt" $ do
       let c = Context Map.empty

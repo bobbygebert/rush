@@ -8,10 +8,6 @@ import System.IO.Temp
 import System.Process
 import Test.Hspec as Hspec
 
-spec :: IO ()
-spec = hspec $ do
-  describe "rush build" buildSpec
-
 rush :: [String] -> IO FilePath
 rush code = do
   ll <- writeSystemTempFile "Lib.ll" $ build $ unlines code
@@ -63,8 +59,8 @@ unwrap (Right ok) = ok
       |_|
 -}
 
-buildSpec :: SpecWith ()
-buildSpec = do
+spec :: SpecWith ()
+spec = describe "rush build" $ do
   it "builds source with module ID equal to module name" $ do
     let i = ""
     let o = "; ModuleID = 'Lib'"
