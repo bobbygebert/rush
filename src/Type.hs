@@ -27,15 +27,15 @@ data Type
   = TInt Span
   | TVar Text Span
   | Type :-> Type
-  deriving (Show, Eq)
+  deriving (Eq)
 
 infixr 9 :->
 
---instance Show Type where
---  show = \case
---    TInt _ -> "Int"
---    TVar txt _ -> unpack txt
---    a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
+instance Show Type where
+  show = \case
+    TInt _ -> "Int"
+    TVar txt _ -> unpack txt
+    a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
 
 typeItem :: Context Type -> Item Span -> Either TypeError (Item Type)
 typeItem context (Item n s e) = normalize <$> (solve =<< infer)
@@ -57,12 +57,15 @@ typeExpr = \case
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> Add <$> typeExpr a <*> typeExpr b
   -- TODO: unify tx and tp
-  Match xs [ps] b -> do
+  -- TODO: unify tarms
+  Match xs arms -> do
     xs' <- mapM typeExpr xs
-    ps' <- mapM typePattern ps
-    b' <- with (bindings =<< ps') (typeExpr b)
-    return $ Match xs' [ps'] b'
-  Match xs ps b -> error "todo"
+    Match xs' <$> mapM match arms
+    where
+      match (ps, b) = do
+        ps' <- mapM typePattern ps
+        b' <- with (bindings =<< ps') (typeExpr b)
+        return (ps', b')
   Lambda (x, s) b -> do
     tx <- fresh s
     Lambda (x, tx) <$> with [(x, tx)] (typeExpr b)
@@ -78,7 +81,8 @@ typeOf = \case
   Num _ ty -> ty
   Var _ ty -> ty
   Add a _ -> typeOf a
-  Match xs ps b -> foldr ((:->) . typeOf) (typeOf b) xs
+  Match xs ((ps, b) : _) -> typeOf b
+  Match _ _ -> error "unreachable"
   Lambda (_, tx) b -> tx :-> typeOf b
   App ty f x -> ty
 
@@ -192,15 +196,14 @@ spec = describe "Type" $ do
 
     it "infers type of Match Expression" $ do
       let c = Context $ Map.fromList [("x", TInt s4)]
-      let i = Item "f" s0 (Match [Var "x" s1] [[Pattern.Num "1" s2]] (Num "2" s3))
+      let i = Item "f" s0 (Match [Var "x" s1] [([Pattern.Num "1" s2], Num "2" s3)])
       let o =
             Item
               "f"
-              (TInt s0 :-> TInt s0)
+              (TInt s0)
               ( Match
                   [Var "x" (TInt s1)]
-                  [[Pattern.Num "1" (TInt s2)]]
-                  (Num "2" (TInt s3))
+                  [([Pattern.Num "1" (TInt s2)], Num "2" (TInt s3))]
               )
       typeItem c i `shouldBe` Right o
 

@@ -28,7 +28,7 @@ eval ctx =
             let c = pack . show $ read (unpack a) + read (unpack b)
              in Constant.Num c ty
           _ -> error "unreachable"
-        Match xs [ps] b -> match ctx xs ps b
+        Match xs [(ps, b)] -> match ctx xs ps b
         Lambda x b -> Constant.Lambda x b
         App ty f x -> case eval ctx f of
           Constant.Lambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
@@ -96,13 +96,13 @@ spec = describe "Eval" $ do
   it "evaluates numeric match" $ do
     eval
       emptyContext
-      (Match [Num "1" (TInt s0)] [[Pattern.Num "1" (TInt s1)]] (Num "2" (TInt s2)))
+      (Match [Num "1" (TInt s0)] [([Pattern.Num "1" (TInt s1)], Num "2" (TInt s2))])
       `shouldBe` Constant.Num "2" (TInt s2)
 
   it "evaluates binding match" $ do
     eval
       emptyContext
-      (Match [Num "2" (TInt s0)] [[Pattern.Binding "x" (TInt s1)]] (Var "x" (TInt s2)))
+      (Match [Num "2" (TInt s0)] [([Pattern.Binding "x" (TInt s1)], Var "x" (TInt s2))])
       `shouldBe` Constant.Num "2" (TInt s0)
 
   it "evaluates multi parameter match" $ do
@@ -110,8 +110,7 @@ spec = describe "Eval" $ do
       emptyContext
       ( Match
           [Num "1" (TInt s0), Num "2" (TInt s1)]
-          [[Pattern.Num "1" (TInt s2), Pattern.Binding "x" (TInt s3)]]
-          (Var "x" (TInt s4))
+          [([Pattern.Num "1" (TInt s2), Pattern.Binding "x" (TInt s3)], Var "x" (TInt s4))]
       )
       `shouldBe` Constant.Num "2" (TInt s1)
 

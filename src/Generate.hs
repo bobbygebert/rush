@@ -115,46 +115,59 @@ buildExpr = \case
   Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
   Rush.Var v _ -> lookup v
   Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
-  Rush.Match xs [ps] e -> mdo
-    result <- buildMatchArm returnB panicB ((\(Rush.Var x _) -> x) <$> xs) ps e
-    panicB <- block `named` "panic"
-    panic
-    returnB <- block `named` "return"
-    return result
-  Rush.Match (_ : _) (_ : _ : _) _ -> error "Match trees are not implemented."
-  Rush.Match (_ : _ : _) _ _ -> error "Match on multiple paramters not implemented."
-  Rush.Match {} -> error "Match on expressions not implemented."
-  -- TODO: move error to panic message.
+  Rush.Match xs arms -> mdo
+    let xs' = (\(Rush.Var x _) -> x) <$> xs
+    matchBlock <- block
+    tried <- buildMatchArms returnBlock matchBlock xs' [] arms
+    returnBlock <- block `named` "return"
+    phi tried
   Rush.Lambda (x, _) b -> return $ parseInt "0" -- error "Lambda expressions not implemented."
   Rush.App _ f x -> do
     f' <- buildExpr f
     x <- buildExpr x
     call f' [(x, [])]
 
+buildMatchArms ::
+  (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m) =>
+  Name ->
+  Name ->
+  [Text] ->
+  [(Operand, Name)] ->
+  [([Pattern.Pattern c], Rush.Expr c)] ->
+  m [(Operand, Name)]
+buildMatchArms _ thisBlock _ tried [] = do
+  panic
+  return tried
+buildMatchArms returnBlock thisBlock xs tried ((ps, b) : arms) = mdo
+  thisBranch <- buildMatchArm returnBlock thisBlock nextBlock xs ps b
+  nextBlock <- block
+  buildMatchArms returnBlock nextBlock xs (thisBranch : tried) arms
+
 buildMatchArm ::
   (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m) =>
+  Name ->
   Name ->
   Name ->
   [Text] ->
   [Pattern.Pattern c] ->
   Rush.Expr c ->
-  m Operand
-buildMatchArm returnB _ [] [] e = do
+  m (Operand, Name)
+buildMatchArm returnBlock thisBlock _ [] [] e = do
   result <- buildExpr e
-  br returnB
-  return result
-buildMatchArm returnB panicB (x : xs) (p : ps) e = case p of
+  br returnBlock
+  return (result, thisBlock)
+buildMatchArm returnBlock thisBlock nextBlock (x : xs) (p : ps) e = case p of
   Binding x' _ -> do
     x'' <- lookup x
-    with [(x', x'')] $ buildMatchArm returnB panicB xs ps e
+    with [(x', x'')] $ buildMatchArm returnBlock thisBlock nextBlock xs ps e
   Num n _ -> mdo
     let n' = parseInt n
     x' <- lookup x
     matches <- icmp EQ x' n'
-    condBr matches continueB panicB
-    continueB <- block
-    buildMatchArm returnB panicB xs ps e
-buildMatchArm _ _ _ _ _ = error "unreachable"
+    condBr matches continueBlock nextBlock
+    continueBlock <- block
+    buildMatchArm returnBlock continueBlock nextBlock xs ps e
+buildMatchArm _ _ _ _ _ _ = error "unreachable"
 
 parseInt :: Text -> Operand
 parseInt = ConstantOperand . parseIntConst

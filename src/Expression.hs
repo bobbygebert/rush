@@ -10,7 +10,7 @@ data Expr c
   = Num Text c
   | Var Text c
   | Add (Expr c) (Expr c)
-  | Match [Expr c] [[Pattern.Pattern c]] (Expr c)
+  | Match [Expr c] [([Pattern.Pattern c], Expr c)]
   | Lambda (Text, c) (Expr c)
   | App c (Expr c) (Expr c)
   deriving (Show, Eq, Foldable, Functor)

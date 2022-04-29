@@ -116,6 +116,16 @@ spec = describe "rush build" $ do
     o <- evalInt r d "__f(1, 2)"
     o `shouldBe` "3"
 
+  it "builds functions with multiple Int equality branches" $ do
+    r <-
+      rush
+        [ "f 1 = 2",
+          "f 2 = 3"
+        ]
+    d <- decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(1) + f(2)"
+    o `shouldBe` "5"
+
   it "builds functions with multiple Int parameters" $ do
     r <- rush ["f x y = x + y"]
     d <- decl ["int64_t __f(int64_t, int64_t);"]

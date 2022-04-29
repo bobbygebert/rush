@@ -16,7 +16,7 @@ import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
 import Text.Megaparsec
 import Text.Megaparsec.Char
-import Prelude hiding (span)
+import Prelude hiding (span, unlines)
 
 data Span = Span SourcePos SourcePos
   deriving (Show, Eq)
@@ -49,7 +49,15 @@ constant :: Parser (Ast Span)
 constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
 
 fn :: Parser (Ast Span)
-fn = Fn <$> spanned lowerIdent <*> (hspace *> pats) <*> (eq *> expr)
+fn = do
+  (f, s) <- lookAhead (spanned lowerIdent)
+  arms <- (:) <$> arm f <*> many (try $ newline *> arm f)
+  return $ Fn (f, s) arms
+  where
+    arm :: Text -> Parser ([Pattern.Pattern Span], Expr Span)
+    arm f = do
+      string f *> hspace
+      (,) <$> pats <*> (eq *> expr)
 
 pats :: Parser [Pattern.Pattern Span]
 pats = (:) <$> pat <*> many (try (hspace *> pat))
@@ -143,14 +151,25 @@ fnSpec = do
       "fn with single binder"
       "f x = x"
       as
-      (Fn ("f", ()) [Pattern.Binding "x" ()] (Var "x" ()))
+      (Fn ("f", ()) [([Pattern.Binding "x" ()], Var "x" ())])
 
   item <* eof
     & parses
       "fn with multiple parameters"
       "f x 123 = x"
       as
-      (Fn ("f", ()) [Pattern.Binding "x" (), Pattern.Num "123" ()] (Var "x" ()))
+      (Fn ("f", ()) [([Pattern.Binding "x" (), Pattern.Num "123" ()], Var "x" ())])
+
+  item <* newline <* eof
+    & parses
+      "fn with multiple pattern branches"
+      ( unlines
+          [ "f 1 = 2",
+            "f 2 = 3"
+          ]
+      )
+      as
+      (Fn ("f", ()) [([Pattern.Num "1" ()], Num "2" ()), ([Pattern.Num "2" ()], Num "3" ())])
 
 appSpec = do
   item <* eof
@@ -158,7 +177,7 @@ appSpec = do
       "fn application"
       "f g = g 1"
       as
-      (Fn ("f", ()) [Pattern.Binding "g" ()] (App () (Var "g" ()) (Num "1" ())))
+      (Fn ("f", ()) [([Pattern.Binding "g" ()], App () (Var "g" ()) (Num "1" ()))])
 
 patSpec = do
   pat <* eof

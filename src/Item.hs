@@ -16,18 +16,19 @@ data Item c = Item {name :: Text, ty :: c, value :: Expr c}
 desugar :: Ast c -> Item c
 desugar = \case
   Constant (n, c) e -> Item n c e
-  Fn (n, c) ps b -> Item n c (desugarFnPat freshNames ps b)
+  Fn (n, c) arms -> Item n c (desugarFnArms arms)
 
-desugarFnPat :: [Text] -> [Pattern.Pattern c] -> Expr c -> Expr c
-desugarFnPat fresh ps b = close vars
+desugarFnArms :: [([Pattern.Pattern c], Expr c)] -> Expr c
+desugarFnArms (arm@(ps, _) : arms) = close args
   where
-    close [] = Match (uncurry Var <$> vars) [ps] b
+    close [] = Match (uncurry Var <$> args) (arm : arms)
     close ((x, c) : vs) = Lambda (x, c) (close vs)
-    vars = zip fresh cs
+    args = zip freshNames cs
     cs = getC <$> ps
     getC = \case
       Pattern.Binding _ c' -> c'
       Pattern.Num _ c' -> c'
+desugarFnArms _ = error "unreachable"
 
 freshNames :: [Text]
 freshNames = pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
