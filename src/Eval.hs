@@ -5,9 +5,10 @@ module Eval (eval, spec) where
 
 import Constant (Constant)
 import qualified Constant
+import Control.Monad (msum)
 import qualified Data.Map as Map
 import Data.Maybe
-import Data.Text
+import Data.Text hiding (foldr, foldr1)
 import Expression
 import Infer (Context (Context, locals))
 import Parser (Span, emptySpan, span)
@@ -28,27 +29,28 @@ eval ctx =
             let c = pack . show $ read (unpack a) + read (unpack b)
              in Constant.Num c ty
           _ -> error "unreachable"
-        Match xs [(ps, b)] -> match ctx xs ps b
+        Match xs arms -> case msum $ uncurry (match ctx xs) <$> arms of
+          Just c -> c
+          Nothing -> error "non-exhaustive match"
         Lambda x b -> Constant.Lambda x b
         App ty f x -> case eval ctx f of
           Constant.Lambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
-        _ -> error "unreachable"
 
 match ::
   Context (Constant Type) ->
   [Expr Type] ->
   [Pattern.Pattern Type] ->
   Expr Type ->
-  Constant Type
-match ctx [] [] b = eval ctx b
+  Maybe (Constant Type)
+match ctx [] [] b = Just $ eval ctx b
 match ctx (x : xs) (p : ps) b =
   let x' = eval ctx x
    in case p of
         Pattern.Binding x'' _ -> with (x'', x') ctx match xs ps b
         Pattern.Num n ty
           | eval ctx (Num n ty) `eq` x' -> match ctx xs ps b
-          | otherwise -> error "non-exhaustive match"
+          | otherwise -> Nothing
           where
             eq :: Constant Type -> Constant Type -> Bool
             eq (Constant.Num a _) (Constant.Num b _) = a == b
@@ -113,6 +115,17 @@ spec = describe "Eval" $ do
           [([Pattern.Num "1" (TInt s2), Pattern.Binding "x" (TInt s3)], Var "x" (TInt s4))]
       )
       `shouldBe` Constant.Num "2" (TInt s1)
+
+  it "evaluates multi branch match" $ do
+    eval
+      emptyContext
+      ( Match
+          [Num "2" (TInt s0)]
+          [ ([Pattern.Num "1" (TInt s1)], Num "1" (TInt s2)),
+            ([Pattern.Num "2" (TInt s3)], Num "3" (TInt s4))
+          ]
+      )
+      `shouldBe` Constant.Num "3" (TInt s4)
 
 emptyContext = Context {locals = Map.empty}
 
