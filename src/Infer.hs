@@ -34,6 +34,7 @@ type Infer t = InferT (State (FreshTypeVarStream t)) t
 type FreshTypeVarStream t = [Span -> t]
 
 data Context t = Context {locals :: Map.Map Name t}
+  deriving (Show)
 
 type Solve = Except TypeError
 

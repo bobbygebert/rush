@@ -27,15 +27,15 @@ data Type
   = TInt Span
   | TVar Text Span
   | Type :-> Type
-  deriving (Eq)
+  deriving (Show, Eq)
 
 infixr 9 :->
 
-instance Show Type where
-  show = \case
-    TInt _ -> "Int"
-    TVar txt _ -> unpack txt
-    a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
+--instance Show Type where
+--  show = \case
+--    TInt _ -> "Int"
+--    TVar txt _ -> unpack txt
+--    a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
 
 typeItem :: Context Type -> Item Span -> Either TypeError (Item Type)
 typeItem context (Item n s e) = normalize <$> (solve =<< infer)

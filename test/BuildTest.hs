@@ -78,6 +78,16 @@ spec = describe "rush build" $ do
     o <- evalInt r d "x"
     o `shouldBe` "3"
 
+  it "builds constant function application" $ do
+    r <-
+      rush
+        [ "f x = x + x",
+          "y = f 2"
+        ]
+    d <- decl ["int64_t y;"]
+    o <- evalInt r d "y"
+    o `shouldBe` "4"
+
   it "builds global references" $ do
     r <-
       rush

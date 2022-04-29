@@ -1,12 +1,14 @@
+{-# LANGUAGE DeriveFunctor #-}
+
 module Constant (Constant (..), Named (..)) where
 
 import Data.Text
 import Expression
 import Type
 
-data Constant
-  = Num Text Type
-  | Lambda (Text, Type) (Expr Type)
-  deriving (Show, Eq)
+data Constant t
+  = Num Text t
+  | Lambda (Text, t) (Expr t)
+  deriving (Show, Eq, Functor)
 
-data Named = Named Text Constant
+data Named = Named Text (Constant Type)

@@ -33,7 +33,7 @@ build path source =
 reduce :: [Item Type] -> [Named]
 reduce = reduce' emptyContext
   where
-    reduce' :: Context Constant -> [Item Type] -> [Named]
+    reduce' :: Context (Constant Type) -> [Item Type] -> [Named]
     reduce' ctx = \case
       [] -> []
       (Item name _ value) : is -> Named name c : reduce' ctx' is
