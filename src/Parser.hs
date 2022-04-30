@@ -63,13 +63,19 @@ pats :: Parser [Pattern.Pattern Span]
 pats = (:) <$> pat <*> many (try (hspace *> pat))
 
 pat :: Parser (Pattern.Pattern Span)
-pat = binding <|> numPat
+pat = binding <|> numPat <|> tuplePat
 
 binding :: Parser (Pattern.Pattern Span)
 binding = uncurry Pattern.Binding <$> spanned lowerIdent
 
 numPat :: Parser (Pattern.Pattern Span)
 numPat = uncurry Pattern.Num <$> spanned (pack <$> some digitChar)
+
+tuplePat :: Parser (Pattern.Pattern Span)
+tuplePat = Pattern.Tup <$> parens (pat `sepBy1` (char ',' *> hspace))
+
+tuple :: Parser (Expr Span)
+tuple = Tup <$> parens (term `sepBy1` (char ',' *> hspace))
 
 app :: Parser (Expr Span)
 app = do
@@ -94,7 +100,7 @@ term :: Parser (Expr Span)
 term = choice [try app, atom]
 
 atom :: Parser (Expr Span)
-atom = num <|> var
+atom = num <|> var <|> tuple
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
@@ -107,6 +113,9 @@ lowerIdent = pack <$> ((:) <$> lowerChar <*> many alphaNumChar)
 
 eq :: Parser ()
 eq = void (hspace *> char '=' <* hspace)
+
+parens :: Parser a -> Parser a
+parens = between (char '(') (char ')')
 
 spanned :: Parser a -> Parser (a, Span)
 spanned p = do
@@ -193,6 +202,13 @@ patSpec = do
       "123"
       as
       (Pattern.Num "123" ())
+
+  pat <* eof
+    & parses
+      "tuple pattern"
+      "(x, y, z)"
+      as
+      (Pattern.Tup [Pattern.Binding "x" (), Pattern.Binding "y" (), Pattern.Binding "z" ()])
 
 constantSpec = do
   item <* eof

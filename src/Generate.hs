@@ -15,6 +15,7 @@ import qualified Data.Map as Map
 import Data.String
 import Data.Text hiding (foldr, head, length, tail, zip)
 import Data.Text.Lazy (toStrict)
+import Debug.Trace
 import qualified Expression as Rush
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
@@ -25,7 +26,7 @@ import LLVM.AST.Global (Global (Function, GlobalVariable, addrSpace, alignment, 
 import LLVM.AST.IntegerPredicate
 import LLVM.AST.Linkage
 import LLVM.AST.Type
-import LLVM.AST.Typed (typeOf)
+import LLVM.AST.Typed (Typed (typeOf))
 import LLVM.AST.Visibility
 import LLVM.IRBuilder hiding (buildModule, fresh)
 import LLVM.Prelude hiding (EQ, lookup)
@@ -52,7 +53,7 @@ type Vars = Map.Map Text Operand
 
 type Builder = ModuleBuilderT (ReaderT Vars (State BuilderState))
 
-buildModule :: String -> [Constant.Named] -> Module
+buildModule :: String -> [Constant.Named Rush.Type] -> Module
 buildModule name =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT Map.empty
@@ -68,19 +69,19 @@ withPanic build = do
 panic :: (Monad m, MonadIRBuilder m, MonadReader Vars m, MonadState BuilderState m) => m ()
 panic = const unreachable =<< flip call [] =<< lookup "panic"
 
-buildItem :: Constant.Named -> Builder Operand
-buildItem (Constant.Named name e) = case e of
+buildItem :: Constant.Named Rush.Type -> Builder Operand
+buildItem (Constant.Named name ty e) = case e of
   Constant.Num n _ ->
     define name
-      <$> global (fromText name) i64
+      <$> global (fromText name) (asType ty)
       $ parseIntConst n
   Constant.Lambda (x, tx) b -> do
     defineUncurried name (Rush.Lambda (x, tx) b)
     define name $
       function
         (fromText name)
-        [(i64, fromText x)]
-        i64
+        [(asType tx, fromText x)]
+        (asType $ Rush.typeOf b)
         (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
 
 defineUncurried :: Text -> Rush.Expr Rush.Type -> ModuleBuilderT (ReaderT Vars (State BuilderState)) Operand
@@ -88,12 +89,13 @@ defineUncurried name e =
   function
     (fromText mangledName)
     argDecls
-    i64
+    (asType $ Rush.typeOf e)
     (\args' -> with (zip argNames args') $ ret =<< buildExpr b)
   where
     mangledName = pack $ "__" ++ unpack name
     argNames = fst <$> xs
-    argDecls = (i64,) . fromText <$> argNames
+    argTypes = asType . snd <$> xs
+    argDecls = zip argTypes $ fromText <$> argNames
     xs = flattenArgs e
     b = getBody e
     flattenArgs = \case
@@ -107,33 +109,41 @@ buildExpr ::
   ( MonadReader Vars m,
     MonadState BuilderState m,
     MonadIRBuilder m,
-    MonadFix m
+    MonadFix m,
+    MonadModuleBuilder m
   ) =>
-  Rush.Expr c ->
+  Rush.Expr Rush.Type ->
   m Operand
-buildExpr = \case
-  Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
-  Rush.Var v _ -> lookup v
-  Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
-  Rush.Match xs arms -> mdo
-    let xs' = (\(Rush.Var x _) -> x) <$> xs
-    matchBlock <- block
-    tried <- buildMatchArms returnBlock matchBlock xs' [] arms
-    returnBlock <- block `named` "return"
-    phi tried
-  Rush.Lambda (x, _) b -> return $ parseInt "0" -- error "Lambda expressions not implemented."
-  Rush.App _ f x -> do
-    f' <- buildExpr f
-    x <- buildExpr x
-    call f' [(x, [])]
+buildExpr =
+  deref <=< \case
+    Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
+    Rush.Tup xs -> error "todo"
+    Rush.Var v _ -> lookup v
+    Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
+    Rush.Match xs arms -> mdo
+      let xs' = (\(Rush.Var x _) -> x) <$> xs
+      matchBlock <- block
+      tried <- buildMatchArms returnBlock matchBlock xs' [] arms
+      returnBlock <- block `named` "return"
+      phi tried
+    Rush.Lambda (x, _) b -> return $ parseInt "0" -- error "Lambda expressions not implemented."
+    Rush.App _ f x -> do
+      f' <- buildExpr f
+      x <- buildExpr x
+      call f' [(x, [])]
+
+deref :: MonadIRBuilder m => Operand -> m Operand
+deref op = case op of
+  LocalReference PointerType {} _ -> load op 0
+  _ -> return op
 
 buildMatchArms ::
-  (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m) =>
+  (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Name ->
   Name ->
   [Text] ->
   [(Operand, Name)] ->
-  [([Pattern.Pattern c], Rush.Expr c)] ->
+  [([Pattern.Pattern Rush.Type], Rush.Expr Rush.Type)] ->
   m [(Operand, Name)]
 buildMatchArms _ thisBlock _ tried [] = do
   panic
@@ -144,13 +154,13 @@ buildMatchArms returnBlock thisBlock xs tried ((ps, b) : arms) = mdo
   buildMatchArms returnBlock nextBlock xs (thisBranch : tried) arms
 
 buildMatchArm ::
-  (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m) =>
+  (MonadReader Vars m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Name ->
   Name ->
   Name ->
   [Text] ->
-  [Pattern.Pattern c] ->
-  Rush.Expr c ->
+  [Pattern.Pattern Rush.Type] ->
+  Rush.Expr Rush.Type ->
   m (Operand, Name)
 buildMatchArm returnBlock thisBlock _ [] [] e = do
   result <- buildExpr e
@@ -167,7 +177,26 @@ buildMatchArm returnBlock thisBlock nextBlock (x : xs) (p : ps) e = case p of
     condBr matches continueBlock nextBlock
     continueBlock <- block
     buildMatchArm returnBlock continueBlock nextBlock xs ps e
-buildMatchArm _ _ _ _ _ _ = error "unreachable"
+  Tup ps' -> case ps' of
+    [] -> buildMatchArm returnBlock thisBlock nextBlock xs ps e
+    ps' -> do
+      --x' <- alloca (asType (Rush.typeOfP $ Tup ps')) Nothing 0
+      x' <- lookup x
+      xs' <- mapM (const fresh) ps'
+      --trace (show xs') return ()
+      --trace (show x') return ()
+      --ptr <- gep x' [int32 0]
+      --trace (show ptr) return ()
+      xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] ps')
+      with (zip xs' xs'') $ buildMatchArm returnBlock thisBlock nextBlock (xs' ++ xs) (ps' ++ ps) e
+buildMatchArm _ _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
+
+asType :: Rush.Type -> Type
+asType = \case
+  Rush.TInt _ -> i64
+  Rush.TTup tys -> PointerType (StructureType False $ asType <$> tys) (AddrSpace 0)
+  Rush.TVar _ _ -> error "unreachable: asType TVar"
+  a Rush.:-> b -> i64 -- TODO
 
 parseInt :: Text -> Operand
 parseInt = ConstantOperand . parseIntConst

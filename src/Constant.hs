@@ -11,4 +11,5 @@ data Constant t
   | Lambda (Text, t) (Expr t)
   deriving (Show, Eq, Functor)
 
-data Named = Named Text (Constant Type)
+data Named t = Named Text t (Constant t)
+  deriving (Show, Eq, Functor)

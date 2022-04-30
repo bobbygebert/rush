@@ -23,6 +23,7 @@ eval ctx =
       extend (x, c) = Context . Map.insert x c . Map.delete x . locals
    in \case
         Num n ty -> Constant.Num n ty
+        Tup {} -> error "todo"
         Var v ty -> get v
         Add a b -> case (eval ctx a, eval ctx b) of
           (Constant.Num a ty@TInt {}, Constant.Num b TInt {}) ->
@@ -32,7 +33,7 @@ eval ctx =
         Match xs arms -> case msum $ uncurry (match ctx xs) <$> arms of
           Just c -> c
           Nothing -> error "non-exhaustive match"
-        Lambda x b -> Constant.Lambda x b
+        Lambda (x, tx) b -> Constant.Lambda (x, tx) b
         App ty f x -> case eval ctx f of
           Constant.Lambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
@@ -55,6 +56,7 @@ match ctx (x : xs) (p : ps) b =
             eq :: Constant Type -> Constant Type -> Bool
             eq (Constant.Num a _) (Constant.Num b _) = a == b
             eq _ _ = error "unreachable"
+        Pattern.Tup {} -> error "todo"
 match _ _ _ _ = error "unreachable"
 
 with :: (Text, c) -> Context c -> (Context c -> f) -> f

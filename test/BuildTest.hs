@@ -152,3 +152,13 @@ spec = describe "rush build" $ do
     d <- decl ["int64_t f(int64_t);"]
     o <- evalInt r d "f(123)"
     o `shouldBe` "123"
+
+  it "builds tuple functions" $ do
+    r <- rush ["f (x, y) = x + y"]
+    d <-
+      decl
+        [ "struct args { int64_t x; int64_t y; };",
+          "int64_t f(struct args *);"
+        ]
+    o <- evalInt r d "f(&((struct args) { 1, 2 }))"
+    o `shouldBe` "3"

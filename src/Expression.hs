@@ -8,6 +8,7 @@ import qualified Pattern
 
 data Expr c
   = Num Text c
+  | Tup [Expr c]
   | Var Text c
   | Add (Expr c) (Expr c)
   | Match [Expr c] [([Pattern.Pattern c], Expr c)]

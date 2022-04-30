@@ -6,7 +6,7 @@ module Item (desugar, Item (..)) where
 
 import Ast
 import Control.Monad
-import Data.Text hiding (foldr, zip)
+import Data.Text hiding (foldr, head, zip)
 import Expression
 import qualified Pattern
 
@@ -28,6 +28,7 @@ desugarFnArms (arm@(ps, _) : arms) = close args
     getC = \case
       Pattern.Binding _ c' -> c'
       Pattern.Num _ c' -> c'
+      Pattern.Tup ps -> getC $ head ps
 desugarFnArms _ = error "unreachable"
 
 freshNames :: [Text]

@@ -27,16 +27,17 @@ build path source =
   toStrict
     . ppllvm
     . buildModule (takeBaseName path)
+    -- . (error . show)
     . reduce
     <$> (inferAndCheck . fmap desugar =<< parse path source)
 
-reduce :: [Item Type] -> [Named]
+reduce :: [Item Type] -> [Named Type]
 reduce = reduce' emptyContext
   where
-    reduce' :: Context (Constant Type) -> [Item Type] -> [Named]
+    reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name _ value) : is -> Named name c : reduce' ctx' is
+      (Item name ty value) : is -> Named name ty c : reduce' ctx' is
         where
           c = eval ctx value
           ctx' = Context (Map.insert name c (locals ctx))
