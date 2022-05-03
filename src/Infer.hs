@@ -23,7 +23,10 @@ type Name = Text
 type TypeError = Text
 
 data Constraint t = (:~) t t
-  deriving (Show, Functor)
+  deriving (Functor)
+
+instance (Show t) => Show (Constraint t) where
+  show (a :~ b) = show a ++ " ~ " ++ show b
 
 infix 1 :~
 
@@ -51,9 +54,18 @@ class Refinable a t where
 class Template a where
   freeTypeVars :: a -> Set.Set Name
   instantiate ::
-    (MonadState [Span -> t] m, Refinable a t) =>
+    (TypeVarStream m t, Refinable a t) =>
     a ->
-    InferT m a a
+    InferT m t a
+
+class (Monad m) => TypeVarStream m t where
+  freshTypeVar :: Span -> InferT m t t
+
+instance TypeVarStream (State (FreshTypeVarStream t)) t where
+  freshTypeVar span = do
+    stream <- get
+    put $ tail stream
+    return $ head stream span
 
 runInfer :: [Span -> t] -> Context t -> Infer t a -> Either TypeError (a, [Constraint t])
 runInfer typeVars env =
@@ -96,7 +108,7 @@ bind v t
   | otherwise = return (Substitutions $ Map.singleton v t)
 
 lookup ::
-  (Show t, Refinable t t, Unifiable t, Template t, MonadState [Span -> t] m) =>
+  (Show t, Refinable t t, Unifiable t, Template t, TypeVarStream m t) =>
   Name ->
   InferT m t t
 lookup v =
@@ -109,11 +121,8 @@ with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
   where
     extendContext (v, op) = Map.insert v op . Map.delete v
 
-fresh :: (MonadState (FreshTypeVarStream t) m) => Span -> m t
-fresh s = do
-  stream <- get
-  put $ tail stream
-  return $ head stream s
+fresh :: (TypeVarStream m t, Monad m) => Span -> InferT m t t
+fresh = freshTypeVar
 
 instance (Functor f, Refinable t t) => Refinable [f t] t where
   apply ss = fmap (apply ss)

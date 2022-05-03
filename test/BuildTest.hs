@@ -123,8 +123,13 @@ spec = describe "rush build" $ do
 
   it "builds functions with multiple Int equality patterns" $ do
     r <- rush ["f 1 2 = 3"]
-    d <- decl ["int64_t __f(int64_t, int64_t);"]
-    o <- evalInt r d "__f(1, 2)"
+    d <-
+      decl
+        [ "struct a { int64_t a; };",
+          "struct a f(int64_t);",
+          "int64_t _cls_f(struct a*, int64_t);"
+        ]
+    o <- evalInt r d "({ struct a cls = f(1); _cls_f(&cls, 2);})"
     o `shouldBe` "3"
 
   it "builds functions with multiple Int equality branches" $ do
@@ -139,19 +144,29 @@ spec = describe "rush build" $ do
 
   it "builds functions with multiple Int parameters" $ do
     r <- rush ["f x y = x + y"]
-    d <- decl ["int64_t __f(int64_t, int64_t);"]
-    o <- evalInt r d "__f(1, 2)"
+    d <-
+      decl
+        [ "struct a { int64_t a; };",
+          "struct a f(int64_t);",
+          "int64_t _cls_f(struct a*, int64_t);"
+        ]
+    o <- evalInt r d "({ struct a cls = f(1); _cls_f(&cls, 2);})"
     o `shouldBe` "3"
 
   it "builds function calls" $ do
     r <-
       rush
-        [ "g x = x",
-          "f x = g x"
+        [ "g x y = x + y",
+          "f x y = g x y"
         ]
-    d <- decl ["int64_t f(int64_t);"]
-    o <- evalInt r d "f(123)"
-    o `shouldBe` "123"
+    d <-
+      decl
+        [ "struct a { int64_t a; };",
+          "struct a f(int64_t);",
+          "int64_t _cls_f(struct a*, int64_t);"
+        ]
+    o <- evalInt r d "({ struct a cls = f(1); _cls_f(&cls, 2);})"
+    o `shouldBe` "3"
 
   it "builds tuple functions" $ do
     r <- rush ["f (x, y) = x + y"]

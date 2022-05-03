@@ -7,7 +7,7 @@ import Control.Monad
 import Control.Monad.Combinators.Expr
 import Data.Function
 import qualified Data.Set as Set
-import Data.Text hiding (span)
+import Data.Text hiding (foldl, span)
 import Data.Void
 import Expression
 import qualified Pattern
@@ -80,10 +80,8 @@ tuple = Tup <$> parens (term `sepBy1` (char ',' *> hspace))
 app :: Parser (Expr Span)
 app = do
   s <- getSourcePos
-  f <- atom
-  x <- hspace *> atom
-  e <- getSourcePos
-  return $ App (Span s e) f x
+  (f, e) : (g, _) : fs <- ((,) <$> atom <*> getSourcePos) `sepBy1` hspace
+  return $ foldl (\f (x, e) -> App (Span s e) f x) (App (Span s e) f g) fs
 
 -- TODO: Parse match expressions
 expr :: Parser (Expr Span)
@@ -181,12 +179,12 @@ fnSpec = do
       (Fn ("f", ()) [([Pattern.Num "1" ()], Num "2" ()), ([Pattern.Num "2" ()], Num "3" ())])
 
 appSpec = do
-  item <* eof
+  app <* eof
     & parses
       "fn application"
-      "f g = g 1"
+      "g x y"
       as
-      (Fn ("f", ()) [([Pattern.Binding "g" ()], App () (Var "g" ()) (Num "1" ()))])
+      (App () (App () (Var "g" ()) (Var "x" ())) (Var "y" ()))
 
 patSpec = do
   pat <* eof

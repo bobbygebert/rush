@@ -17,6 +17,7 @@ import Generate
 import Infer (Context (Context, locals), TypeError)
 import Item
 import LLVM.Pretty (ppllvm)
+import Monomorphize (ir)
 import Parser
 import System.FilePath
 import Type
@@ -28,6 +29,7 @@ build path source =
     . ppllvm
     . buildModule (takeBaseName path)
     -- . (error . show)
+    . ir
     . reduce
     <$> (inferAndCheck . fmap desugar =<< parse path source)
 

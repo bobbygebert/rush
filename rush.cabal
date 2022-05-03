@@ -29,8 +29,10 @@ library
       Expression
       Generate
       Infer
+      IR
       Item
       Lib
+      Monomorphize
       Parser
       Pattern
       Type

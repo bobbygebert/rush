@@ -5,7 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Type (typeOf, typeOfP, typeItem, Type (..), spec) where
+module Type (typeOf, typeOfP, spanOf, typeItem, Type (..), spec) where
 
 import Ast
 import Control.Monad
