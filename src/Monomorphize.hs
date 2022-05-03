@@ -25,21 +25,21 @@ import qualified Pattern
 import qualified Type as Rush
 import Prelude hiding (init, lookup)
 
-type Builder = InferT (State BuilderState) Type
+type Build = InferT (State BuildState) Type
 
-data BuilderState = BuilderState {definitions :: [IR.Named Type], names :: [Text], constraints :: [Constraint Type]}
+data BuildState = BuildState {definitions :: [IR.Named Type], names :: [Text], constraints :: [Constraint Type]}
 
-instance TypeVarStream (State BuilderState) Type where
+instance TypeVarStream (State BuildState) Type where
   freshTypeVar span = do
     state <- get
     let n : ns = names state
     put $ state {names = ns}
     return $ TVar n span
 
-runBuilder :: Builder a -> (a, [Constraint Type])
-runBuilder =
+runBuild :: Build a -> (a, [Constraint Type])
+runBuild =
   either (error . show) id
-    . flip evalState (BuilderState [] freshNames [])
+    . flip evalState (BuildState [] freshNames [])
     . flip runReaderT (Context Map.empty)
     . runExceptT
     . runWriterT
@@ -48,7 +48,7 @@ freshNames :: [Text]
 freshNames = pack . ('#' :) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
 ir :: [Eval.Named Rush.Type] -> [IR.Named Type]
-ir = either (error . show) id . monomorphize . solve . runBuilder . (unpack <=< closeOver)
+ir = either (error . show) id . monomorphize . solve . runBuild . (unpack <=< closeOver)
   where
     solve (items, constraints) = (\substitutions -> apply substitutions <$> items) <$> solveConstraints constraints
     monomorphize = fmap $ filter ((== 0) . Set.size . freeTypeVars . (\(IR.Named _ e) -> typeOf $ unConst e))
@@ -59,7 +59,7 @@ ir = either (error . show) id . monomorphize . solve . runBuilder . (unpack <=< 
       with [(n, ty)] $ closeOver cs
 
 -- TODO: merge spans?
-init :: Rush.Type -> Builder Type
+init :: Rush.Type -> Build Type
 init = \case
   Rush.TInt s -> pure $ TInt s
   Rush.TTup tys -> TTup <$> mapM init tys
@@ -70,7 +70,7 @@ init = \case
     tc <- freshVar (spanOf ta)
     TFn tc <$> init a <*> init b
 
-closeOverConstant :: Eval.Named Rush.Type -> Builder Type
+closeOverConstant :: Eval.Named Rush.Type -> Build Type
 closeOverConstant (Eval.Named name c) =
   (typeOf <$>) . define name =<< case c of
     Eval.CNum n ty -> IR.CNum n <$> init ty
@@ -82,7 +82,7 @@ closeOverConstant (Eval.Named name c) =
       ensure $ tb' :~ typeOf b'
       return $ IR.CFn TUnit (x, tx') b'
 
-closeOverExpr :: Text -> Rush.Expr Rush.Type -> Builder (Expr Type)
+closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
   Rush.Num n ty -> Num n <$> init ty
   Rush.Tup xs -> Tup <$> mapM (closeOverExpr parent) xs
@@ -126,7 +126,7 @@ closeOverExpr parent e = case e of
           ty' -> error $ show (ty, ty')
     return $ App ty' f' x'
 
-captures :: Set.Set Text -> Rush.Expr Rush.Type -> Builder (Map.Map Text (Expr Type))
+captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))
 captures bound =
   let unionMany = foldr Map.union Map.empty
    in \case
@@ -151,16 +151,16 @@ captures bound =
               Pattern.Binding b _ -> Set.singleton b
               _ -> Set.empty
 
-freshName :: Builder Text
+freshName :: Build Text
 freshName = do
   state <- get
   put state {names = tail $ names state}
   return $ head $ names state
 
-freshVar :: Span -> Builder Type
+freshVar :: Span -> Build Type
 freshVar s = flip TVar s <$> freshName
 
-define :: Text -> IR.Constant Type -> Builder (Expr Type)
+define :: Text -> IR.Constant Type -> Build (Expr Type)
 define name val = do
   state <- get
   put state {definitions = IR.Named name val : definitions state}

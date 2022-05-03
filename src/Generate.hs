@@ -36,7 +36,7 @@ import Pattern
 import Test.Hspec
 import Prelude hiding (EQ, lookup)
 
-data BuilderState = BuilderState
+data BuildState = BuildState
   { globals :: Map.Map Text Operand,
     names :: [Text]
   }
@@ -44,7 +44,7 @@ data BuilderState = BuilderState
 freshNames :: [Text]
 freshNames = pack . ("__" ++) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
-fresh :: (MonadState BuilderState m) => m Text
+fresh :: (MonadState BuildState m) => m Text
 fresh = do
   state <- get
   put $ state {names = tail $ names state}
@@ -52,11 +52,11 @@ fresh = do
 
 data Locals = Locals {locals :: Map.Map Text Operand, closure :: Maybe Operand, captures :: [Text]}
 
-type Builder = ModuleBuilderT (ReaderT Locals (State BuilderState))
+type Build = ModuleBuilderT (ReaderT Locals (State BuildState))
 
 buildModule :: String -> [Rush.Named Rush.Type] -> Module
 buildModule name =
-  flip evalState (BuilderState Map.empty freshNames)
+  flip evalState (BuildState Map.empty freshNames)
     . flip runReaderT (Locals Map.empty Nothing [])
     . buildModuleT (fromString name)
     . withPanic
@@ -67,10 +67,10 @@ withPanic build = do
   panic <- extern (fromString "panic") [] VoidType
   with [("panic", panic)] build
 
-panic :: (Monad m, MonadIRBuilder m, MonadReader Locals m, MonadState BuilderState m, MonadModuleBuilder m) => m ()
+panic :: (Monad m, MonadIRBuilder m, MonadReader Locals m, MonadState BuildState m, MonadModuleBuilder m) => m ()
 panic = const unreachable =<< flip call [] =<< lookup "panic"
 
-buildItem :: Rush.Named Rush.Type -> Builder Operand
+buildItem :: Rush.Named Rush.Type -> Build Operand
 buildItem (Rush.Named name constant) = case constant of
   Rush.CNum n ty ->
     define name
@@ -99,7 +99,7 @@ closureFields closureOp fields = mapM get (zip [0 ..] $ Map.toAscList fields)
 
 buildExpr ::
   ( MonadReader Locals m,
-    MonadState BuilderState m,
+    MonadState BuildState m,
     MonadIRBuilder m,
     MonadFix m,
     MonadModuleBuilder m
@@ -147,7 +147,7 @@ deref op = case op of
   _ -> return op
 
 buildMatchArms ::
-  (MonadReader Locals m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
+  (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Name ->
   Name ->
   [Text] ->
@@ -163,7 +163,7 @@ buildMatchArms returnBlock thisBlock xs tried ((ps, b) : arms) = mdo
   buildMatchArms returnBlock nextBlock xs (thisBranch : tried) arms
 
 buildMatchArm ::
-  (MonadReader Locals m, MonadState BuilderState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
+  (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Name ->
   Name ->
   Name ->
@@ -229,7 +229,7 @@ with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
 bind :: (MonadReader Locals m) => Map.Map Text Rush.Type -> Operand -> m a -> m a
 bind caps op = local (\ctx -> ctx {closure = Just op, captures = fst <$> Map.toAscList caps})
 
-lookup :: (MonadReader Locals m, MonadState BuilderState m, MonadIRBuilder m, MonadModuleBuilder m) => Text -> m Operand
+lookup :: (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadModuleBuilder m) => Text -> m Operand
 lookup name =
   do
     globals' <- gets globals
@@ -248,7 +248,7 @@ lookup name =
             ++ unlines (show <$> Map.toAscList locals')
     return $ fromMaybe (error err) (local <|> capture <|> global)
 
-define :: (MonadState BuilderState m) => Text -> m Operand -> m Operand
+define :: (MonadState BuildState m) => Text -> m Operand -> m Operand
 define name op = do
   op <- op
   state <- get
