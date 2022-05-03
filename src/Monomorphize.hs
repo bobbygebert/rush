@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -6,7 +7,6 @@
 
 module Monomorphize where
 
-import qualified Constant
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
@@ -16,6 +16,7 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (filter, foldr, head, init, reverse, tail, unlines, zip)
 import qualified Data.Text.Internal.Fusion.Size as Map
+import Eval
 import qualified Expression as Rush
 import IR
 import Infer
@@ -26,7 +27,7 @@ import Prelude hiding (init, lookup)
 
 type Builder = InferT (State BuilderState) Type
 
-data BuilderState = BuilderState {definitions :: [(Text, Expr Type)], names :: [Text], constraints :: [Constraint Type]}
+data BuilderState = BuilderState {definitions :: [IR.Named Type], names :: [Text], constraints :: [Constraint Type]}
 
 instance TypeVarStream (State BuilderState) Type where
   freshTypeVar span = do
@@ -46,15 +47,14 @@ runBuilder =
 freshNames :: [Text]
 freshNames = pack . ('#' :) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
-ir :: [Constant.Named Rush.Type] -> [(Text, Expr Type)]
+ir :: [Eval.Named Rush.Type] -> [IR.Named Type]
 ir = either (error . show) id . monomorphize . solve . runBuilder . (unpack <=< closeOver)
   where
-    solve (items, constraints) = (\substitutions -> refine substitutions <$> items) <$> solveConstraints constraints
-    refine ss (name, expr) = (name, apply ss expr)
-    monomorphize = fmap $ filter ((== 0) . Set.size . freeTypeVars . (\(_, x) -> typeOf x))
+    solve (items, constraints) = (\substitutions -> apply substitutions <$> items) <$> solveConstraints constraints
+    monomorphize = fmap $ filter ((== 0) . Set.size . freeTypeVars . (\(IR.Named _ e) -> typeOf $ unConst e))
     unpack = const $ gets $ reverse . definitions
     closeOver [] = return ()
-    closeOver (c@(Constant.Named n _ _) : cs) = do
+    closeOver (c@(Eval.Named n _) : cs) = do
       ty <- closeOverConstant c
       with [(n, ty)] $ closeOver cs
 
@@ -70,17 +70,17 @@ init = \case
     tc <- freshVar (spanOf ta)
     TFn tc <$> init a <*> init b
 
-closeOverConstant :: Constant.Named Rush.Type -> Builder Type
-closeOverConstant (Constant.Named name ty c) =
+closeOverConstant :: Eval.Named Rush.Type -> Builder Type
+closeOverConstant (Eval.Named name c) =
   (typeOf <$>) . define name =<< case c of
-    Constant.Num n ty -> Num n <$> init ty
-    Constant.Lambda (x, tx) b -> do
+    Eval.CNum n ty -> IR.CNum n <$> init ty
+    Eval.CLambda (x, tx) b -> do
       tx' <- init tx
       tb' <- freshVar (spanOf tx')
       let ty' = TFn TUnit tx' tb'
       b' <- with [(name, ty'), (x, tx')] $ closeOverExpr name b
       ensure $ tb' :~ typeOf b'
-      return $ Fn name TUnit (x, tx') b'
+      return $ IR.CFn TUnit (x, tx') b'
 
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Builder (Expr Type)
 closeOverExpr parent e = case e of
@@ -113,7 +113,7 @@ closeOverExpr parent e = case e of
         if Map.size cs == 0
           then TUnit
           else TClosure name (Map.map typeOf cs) tb
-    f <- define name $ Fn name tc (x, tx') b'
+    f <- define name $ IR.CFn tc (x, tx') b'
     return $ case tc of
       TUnit -> f
       _ -> Closure name cs f
@@ -160,8 +160,8 @@ freshName = do
 freshVar :: Span -> Builder Type
 freshVar s = flip TVar s <$> freshName
 
-define :: Text -> Expr Type -> Builder (Expr Type)
+define :: Text -> IR.Constant Type -> Builder (Expr Type)
 define name val = do
   state <- get
-  put state {definitions = (name, val) : definitions state}
-  return $ Var name (typeOf val)
+  put state {definitions = IR.Named name val : definitions state}
+  return $ Var name (typeOf $ unConst val)

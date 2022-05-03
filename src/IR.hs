@@ -15,6 +15,14 @@ import Infer
 import Parser (Span, as, emptySpan)
 import qualified Pattern
 
+data Constant t
+  = CNum Text t
+  | CFn Type (Text, t) (Expr t)
+  deriving (Show, Eq, Functor)
+
+data Named t = Named Text (Constant t)
+  deriving (Show, Eq, Functor)
+
 data Type
   = TInt Span
   | TTup [Type]
@@ -32,7 +40,7 @@ data Expr t
   | Var Text t
   | Add (Expr t) (Expr t)
   | Match [Expr t] [([Pattern.Pattern t], Expr t)]
-  | Fn Text Type (Text, t) (Expr t)
+  | Fn Type (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | App t (Expr t) (Expr t)
   deriving (Eq, Functor)
@@ -63,7 +71,7 @@ instance (Show t) => Show (Expr t) where
         ++ " })"
       where
         showArm (ps, b) = unwords (("(" ++) . (++ ")") . show <$> ps) ++ " -> " ++ show b
-    Fn _ cls (x, tx) tb -> "(f = {" ++ show cls ++ "} (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show tb ++ ")"
+    Fn cls (x, tx) tb -> "(f = {" ++ show cls ++ "} (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show tb ++ ")"
     Closure f fields _ ->
       "({" ++ intercalate ", " (showCapture <$> Map.toList fields) ++ "} "
         ++ unpack f
@@ -123,6 +131,11 @@ instance Unifiable Type where
   isVar v (TVar tv _) = v == tv
   isVar _ _ = False
 
+unConst :: Constant Type -> Expr Type
+unConst = \case
+  CFn tc x b -> Fn tc x b
+  CNum n ty -> Num n ty
+
 typeOf :: Expr Type -> Type
 typeOf = \case
   Num _ ty -> ty
@@ -132,7 +145,7 @@ typeOf = \case
   Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
-  Fn name cls a b -> TFn cls (snd a) (typeOf b)
+  Fn cls a b -> TFn cls (snd a) (typeOf b)
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   App ty f x -> ty
 

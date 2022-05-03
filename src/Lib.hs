@@ -3,7 +3,6 @@
 module Lib (build) where
 
 import Ast
-import Constant (Constant, Named (Named))
 import Control.Arrow hiding (first)
 import Data.Bifunctor
 import Data.Either (partitionEithers)
@@ -39,7 +38,7 @@ reduce = reduce' emptyContext
     reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name ty value) : is -> Named name ty c : reduce' ctx' is
+      (Item name ty value) : is -> Named name c : reduce' ctx' is
         where
           c = eval ctx value
           ctx' = Context (Map.insert name c (locals ctx))

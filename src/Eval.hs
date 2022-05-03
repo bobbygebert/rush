@@ -1,10 +1,11 @@
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
-module Eval (eval, spec) where
+module Eval (eval, spec, Constant (..), Named (..)) where
 
-import Constant (Constant)
-import qualified Constant
 import Control.Monad (msum)
 import qualified Data.Map as Map
 import Data.Maybe
@@ -17,25 +18,40 @@ import Test.Hspec as Hspec
 import Type hiding (spec)
 import Prelude hiding (lookup)
 
+data Constant t
+  = CNum Text t
+  | CLambda (Text, t) (Expr t)
+  deriving (Show, Eq, Functor, Foldable)
+
+data Named t = Named Text (Constant t)
+  deriving (Show, Eq, Functor, Foldable)
+
+instance Traversable Constant where
+  traverse f (CNum n ty) = CNum n <$> f ty
+  traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
+
+instance Traversable Named where
+  traverse f (Named n c) = Named n <$> traverse f c
+
 eval :: Context (Constant Type) -> Expr Type -> Constant Type
 eval ctx =
   let get = lookup ctx
       extend (x, c) = Context . Map.insert x c . Map.delete x . locals
    in \case
-        Num n ty -> Constant.Num n ty
+        Num n ty -> CNum n ty
         Tup {} -> error "todo"
         Var v ty -> get v
         Add a b -> case (eval ctx a, eval ctx b) of
-          (Constant.Num a ty@TInt {}, Constant.Num b TInt {}) ->
+          (CNum a ty@TInt {}, CNum b TInt {}) ->
             let c = pack . show $ read (unpack a) + read (unpack b)
-             in Constant.Num c ty
+             in CNum c ty
           _ -> error "unreachable"
         Match xs arms -> case msum $ uncurry (match ctx xs) <$> arms of
           Just c -> c
           Nothing -> error "non-exhaustive match"
-        Lambda (x, tx) b -> Constant.Lambda (x, tx) b
+        Lambda (x, tx) b -> CLambda (x, tx) b
         App ty f x -> case eval ctx f of
-          Constant.Lambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
+          CLambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
 
 match ::
@@ -54,7 +70,7 @@ match ctx (x : xs) (p : ps) b =
           | otherwise -> Nothing
           where
             eq :: Constant Type -> Constant Type -> Bool
-            eq (Constant.Num a _) (Constant.Num b _) = a == b
+            eq (CNum a _) (CNum b _) = a == b
             eq _ _ = error "unreachable"
         Pattern.Tup {} -> error "todo"
 match _ _ _ _ = error "unreachable"
@@ -67,8 +83,8 @@ extend (x, c) = Context . Map.insert x c . Map.delete x . locals
 
 unConst :: Constant Type -> Expr Type
 unConst = \case
-  Constant.Lambda x b -> Lambda x b
-  Constant.Num n ty -> Num n ty
+  CLambda x b -> Lambda x b
+  CNum n ty -> Num n ty
 
 lookup :: Context (Constant Type) -> Text -> Constant Type
 lookup ctx = fromMaybe (error $ show ctx) . flip Map.lookup (locals ctx)
@@ -88,26 +104,26 @@ spec = describe "Eval" $ do
     eval
       emptyContext
       (Add (Num "1" (TInt s0)) (Add (Num "2" (TInt s2)) (Num "3" (TInt s3))))
-      `shouldBe` Constant.Num "6" (TInt s0)
+      `shouldBe` CNum "6" (TInt s0)
 
   it "evaluates application" $ do
-    let ctx = [("f", Constant.Lambda ("x", TInt s0) (Add (Var "x" (TInt s1)) (Var "x" (TInt s2))))]
+    let ctx = [("f", CLambda ("x", TInt s0) (Add (Var "x" (TInt s1)) (Var "x" (TInt s2))))]
     eval
       (Context $ Map.fromList ctx)
       (App (TInt s0) (Var "f" (TInt s1 :-> TInt s2)) (Num "2" (TInt s3)))
-      `shouldBe` Constant.Num "4" (TInt s0)
+      `shouldBe` CNum "4" (TInt s0)
 
   it "evaluates numeric match" $ do
     eval
       emptyContext
       (Match [Num "1" (TInt s0)] [([Pattern.Num "1" (TInt s1)], Num "2" (TInt s2))])
-      `shouldBe` Constant.Num "2" (TInt s2)
+      `shouldBe` CNum "2" (TInt s2)
 
   it "evaluates binding match" $ do
     eval
       emptyContext
       (Match [Num "2" (TInt s0)] [([Pattern.Binding "x" (TInt s1)], Var "x" (TInt s2))])
-      `shouldBe` Constant.Num "2" (TInt s0)
+      `shouldBe` CNum "2" (TInt s0)
 
   it "evaluates multi parameter match" $ do
     eval
@@ -116,7 +132,7 @@ spec = describe "Eval" $ do
           [Num "1" (TInt s0), Num "2" (TInt s1)]
           [([Pattern.Num "1" (TInt s2), Pattern.Binding "x" (TInt s3)], Var "x" (TInt s4))]
       )
-      `shouldBe` Constant.Num "2" (TInt s1)
+      `shouldBe` CNum "2" (TInt s1)
 
   it "evaluates multi branch match" $ do
     eval
@@ -127,7 +143,7 @@ spec = describe "Eval" $ do
             ([Pattern.Num "2" (TInt s3)], Num "3" (TInt s4))
           ]
       )
-      `shouldBe` Constant.Num "3" (TInt s4)
+      `shouldBe` CNum "3" (TInt s4)
 
 emptyContext = Context {locals = Map.empty}
 

@@ -9,7 +9,6 @@
 
 module Generate (buildModule) where
 
-import qualified Constant
 import Control.Monad.Reader (MonadReader (ask, local), ReaderT (runReaderT), asks)
 import Control.Monad.State
 import Data.Char
@@ -55,13 +54,13 @@ data Locals = Locals {locals :: Map.Map Text Operand, closure :: Maybe Operand, 
 
 type Builder = ModuleBuilderT (ReaderT Locals (State BuilderState))
 
-buildModule :: String -> [(Text, Rush.Expr Rush.Type)] -> Module
+buildModule :: String -> [Rush.Named Rush.Type] -> Module
 buildModule name =
   flip evalState (BuilderState Map.empty freshNames)
     . flip runReaderT (Locals Map.empty Nothing [])
     . buildModuleT (fromString name)
     . withPanic
-    . mapM_ (uncurry buildItem)
+    . mapM_ buildItem
 
 withPanic :: (MonadModuleBuilder m, MonadReader Locals m) => m b -> m b
 withPanic build = do
@@ -71,20 +70,20 @@ withPanic build = do
 panic :: (Monad m, MonadIRBuilder m, MonadReader Locals m, MonadState BuilderState m, MonadModuleBuilder m) => m ()
 panic = const unreachable =<< flip call [] =<< lookup "panic"
 
-buildItem :: Text -> Rush.Expr Rush.Type -> Builder Operand
-buildItem name = \case
-  Rush.Num n ty ->
+buildItem :: Rush.Named Rush.Type -> Builder Operand
+buildItem (Rush.Named name constant) = case constant of
+  Rush.CNum n ty ->
     define name
       <$> global (fromText name) (asValue ty)
       $ parseIntConst n
-  Rush.Fn _ tc@(Rush.TClosure _ caps _) (x, tx) b -> do
+  Rush.CFn tc@(Rush.TClosure _ caps _) (x, tx) b -> do
     define name $
       function
         (fromText name)
         [(asArg tc, fromText "closure"), (asArg tx, fromText x)]
         (asValue $ Rush.typeOf b)
         (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< buildExpr b))
-  Rush.Fn _ Rush.TUnit (x, tx) b -> do
+  Rush.CFn Rush.TUnit (x, tx) b -> do
     define name $
       function
         (fromText name)
