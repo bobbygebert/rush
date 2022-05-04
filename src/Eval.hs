@@ -13,6 +13,7 @@ import Data.Text hiding (foldr, foldr1)
 import Expression
 import Infer (Context (Context, locals))
 import Parser (Span, emptySpan, span)
+import Pattern (Pattern)
 import qualified Pattern
 import Test.Hspec as Hspec
 import Type hiding (spec)
@@ -55,11 +56,7 @@ eval ctx =
           _ -> error "unreachable"
 
 match ::
-  Context (Constant Type) ->
-  [Expr Type] ->
-  [Pattern.Pattern Type] ->
-  Expr Type ->
-  Maybe (Constant Type)
+  Context (Constant Type) -> [Expr Type] -> [Pattern Type] -> Expr Type -> Maybe (Constant Type)
 match ctx [] [] b = Just $ eval ctx b
 match ctx (x : xs) (p : ps) b =
   let x' = eval ctx x
