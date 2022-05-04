@@ -46,8 +46,8 @@ eval fmt rush decls c = do
 build :: String -> String
 build = unpack . unwrap . Lib.build "Lib.rush" . pack
 
-unwrap :: (Show err) => Either err ok -> ok
-unwrap (Left err) = error $ show err
+unwrap :: Either [Text] ok -> ok
+unwrap (Left err) = error $ unlines $ unpack <$> err
 unwrap (Right ok) = ok
 
 {-
@@ -186,5 +186,22 @@ spec = describe "rush build" $ do
           "f x = h (g x)"
         ]
     d <- decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(1)"
+    o `shouldBe` "2"
+
+  it "builds distinct monomorphic variants of functions" $ do
+    r <-
+      rush
+        [ "h x = x",
+          "add (x, y) = x + y",
+          "g x = add (h (x + x, x + x))",
+          "f x = h (x + x)"
+        ]
+    d <-
+      decl
+        [ "struct pair { int64_t a; int64_t b; };",
+          "struct pair g(int64_t);",
+          "int64_t f(int64_t);"
+        ]
     o <- evalInt r d "f(1)"
     o `shouldBe` "2"

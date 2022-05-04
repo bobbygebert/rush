@@ -126,7 +126,3 @@ fresh = freshTypeVar
 
 instance (Functor f, Refinable a t) => Refinable (f a) t where
   apply ss = fmap (apply ss)
-
-instance (Foldable f, Template t) => Template (f t) where
-  freeTypeVars = foldr (Set.union . freeTypeVars) Set.empty
-  instantiate = error "Not implemented"

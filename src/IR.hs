@@ -13,7 +13,6 @@ import Data.List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, unwords, zip)
-import Debug.Trace
 import Infer
 import Parser (Span, as, emptySpan)
 import qualified Pattern
@@ -90,7 +89,9 @@ instance Template Type where
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TVar v _ -> Set.singleton v
     TStruct fields -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems fields)
-    TClosure _ c f -> freeTypeVars c `Set.union` freeTypeVars f
+    TClosure _ c f ->
+      foldr (Set.union . freeTypeVars) Set.empty (Map.elems c)
+        `Set.union` freeTypeVars f
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
 
   instantiate ty = do
@@ -106,10 +107,16 @@ instance Template Type where
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
 
-instance (Refinable t t) => Refinable (Constant t) t where
-  apply ss = \case
-    CNum n ty -> CNum n (apply ss ty)
-    CFn tc (x, tx) b -> CFn (apply ss tc) (x, apply ss tx) (apply ss b)
+instance Template (Constant Type) where
+  freeTypeVars = \case
+    CNum _ ty -> freeTypeVars ty
+    CFn ty _ _ -> freeTypeVars ty
+  instantiate c = do
+    let ty = typeOf $ unConst c
+    let vs = Set.toList $ freeTypeVars ty
+    vs' <- forM vs $ const (fresh (spanOf ty))
+    let s = Substitutions $ Map.fromList $ zip vs vs'
+    return $ apply s c
 
 instance Refinable Type Type where
   apply ss@(Substitutions ss') = \case
@@ -122,7 +129,7 @@ instance Refinable Type Type where
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
 
 instance Unifiable Type where
-  unifyingSubstitutions a b = trace ("usubs: " ++ show a ++ " :~ " ++ show b) usubs a b
+  unifyingSubstitutions a b = usubs a b
     where
       usubs t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
       usubs (TTup txs) (TTup tys) = unifyMany txs tys

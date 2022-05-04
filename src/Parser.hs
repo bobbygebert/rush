@@ -75,7 +75,9 @@ tuplePat :: Parser (Pattern.Pattern Span)
 tuplePat = Pattern.Tup <$> parens (pat `sepBy1` (char ',' *> hspace))
 
 tuple :: Parser (Expr Span)
-tuple = Tup <$> parens (term `sepBy1` (char ',' *> hspace))
+tuple = Tup <$> parens ((:) <$> (expr <* sep) <*> (expr `sepBy1` sep))
+  where
+    sep = (hspace *> char ',') *> hspace
 
 app :: Parser (Expr Span)
 app = do
@@ -98,7 +100,7 @@ term :: Parser (Expr Span)
 term = choice [try app, atom]
 
 atom :: Parser (Expr Span)
-atom = num <|> var <|> try (parens term) <|> tuple
+atom = num <|> var <|> try tuple <|> parens expr
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
@@ -181,10 +183,16 @@ fnSpec = do
 appSpec = do
   app <* eof
     & parses
-      "fn application"
+      "chained applications"
       "g x y"
       as
       (App () (App () (Var "g" ()) (Var "x" ())) (Var "y" ()))
+  app <* eof
+    & parses
+      "application to parenthesized term"
+      "g (x + x)"
+      as
+      (App () (Var "g" ()) (Add (Var "x" ()) (Var "x" ())))
 
 patSpec = do
   pat <* eof

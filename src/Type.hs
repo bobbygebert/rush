@@ -53,7 +53,7 @@ typeItem context (Item n s e) = normalize <$> (solve =<< infer)
     solve (item, cs) = flip apply item <$> solveConstraints cs
     normalize item@(Item _ ty _) = apply (Substitutions ss) item
       where
-        tvs = Set.toList (freeTypeVars item)
+        tvs = Set.toList (freeTypeVars ty)
         ss = Map.fromList $ zip tvs (freshTypeVars <*> repeat (spanOf ty))
 
 typeExpr :: Expr Span -> Infer Type (Expr Type)

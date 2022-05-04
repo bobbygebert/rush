@@ -62,18 +62,23 @@ type Generate = InferT (State GenerateState) Type
 
 data GenerateState = GenerateState
   { generated :: Map.Map (Text, Type) (IR.Constant Type),
-    templates :: Context (IR.Constant Type)
+    templates :: Context (IR.Constant Type),
+    numbers :: [Text]
   }
   deriving (Show)
 
-instance TypeVarStream (State GenerateState) (IR.Constant Type) where
-  freshTypeVar = error "unreachable"
+instance TypeVarStream (State GenerateState) Type where
+  freshTypeVar span = do
+    state <- get
+    let n : ns = numbers state
+    put $ state {numbers = ns}
+    return $ TVar n span
 
 runGenerate :: Context Type -> Context (IR.Constant Type) -> Generate [IR.Named Type] -> [IR.Named Type]
 runGenerate types templates =
   solve
     . either (error . show) id
-    . flip evalState (GenerateState Map.empty templates)
+    . flip evalState (GenerateState Map.empty templates (pack . show <$> [0 ..]))
     . flip runReaderT types
     . runExceptT
     . runWriterT
@@ -102,7 +107,12 @@ generate cs =
       first
         (Map.fromList . fmap (\(IR.Named n c) -> (n, c)))
         (templatesAndTargets cs)
-    templatesAndTargets = partition ((/= 0) . Set.size . freeTypeVars . (\(IR.Named _ c) -> unConst c))
+    templatesAndTargets =
+      partition
+        ( (/= 0) . Set.size
+            . foldr (Set.union . freeTypeVars) Set.empty
+            . (\(IR.Named _ c) -> unConst c)
+        )
 
 monomorphize :: Set.Set Text -> Expr Type -> Generate (Expr Type)
 monomorphize locals e = case e of
@@ -124,15 +134,20 @@ extract :: Text -> Type -> Set.Set Text -> Expr Type -> Generate (Expr Type)
 extract name ty locals defaultExpr
   | name `Set.member` locals = pure defaultExpr
   | otherwise = do
-    generic <- template name
+    generic <- mapM instantiate =<< template name
     case generic of
       Nothing -> pure defaultExpr
       Just c -> do
         state <- get
+        let mangled = "_" <> head (numbers state) <> "_" <> name
         let ty' = typeOf $ unConst c
         ensure $ ty' :~ ty
-        put state {generated = Map.insert (name, ty) c (generated state)}
-        pure $ Var name ty
+        put
+          state
+            { generated = Map.insert (mangled, ty) c (generated state),
+              numbers = tail (numbers state)
+            }
+        pure $ Var mangled ty
 
 solve :: (Unifiable t, Refinable a t, Refinable t t, Show t) => (a, [Constraint t]) -> a
 solve (items, constraints) =
