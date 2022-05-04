@@ -61,12 +61,7 @@ typeExpr = \case
   Num n c -> pure $ Num n (TInt c)
   Tup xs -> Tup <$> mapM typeExpr xs
   Var v c -> Var v . withSpan c <$> lookup v
-  Add a b -> do
-    a' <- typeExpr a
-    b' <- typeExpr b
-    ensure $ typeOf a' :~ TInt emptySpan
-    ensure $ typeOf a' :~ typeOf b'
-    return $ Add a' b'
+  Add a b -> Add <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
   -- TODO: unify tarms
   Match xs arms -> do
     xs' <- mapM typeExpr xs
@@ -84,11 +79,16 @@ typeExpr = \case
     tx <- fresh s
     Lambda (x, tx) <$> with [(x, tx)] (typeExpr b)
   App s f x -> do
-    f' <- typeExpr f
     x' <- typeExpr x
     ty <- fresh s
-    ensure (typeOf f' :~ typeOf x' :-> ty)
-    return $ App ty f' x'
+    f' <- constrained f (:~ typeOf x' :-> ty)
+    pure $ App ty f' x'
+
+constrained :: Expr Span -> (Type -> Constraint Type) -> Infer Type (Expr Type)
+constrained e c = do
+  e' <- typeExpr e
+  ensure $ c (typeOf e')
+  pure e'
 
 typeOf :: Expr Type -> Type
 typeOf = \case
