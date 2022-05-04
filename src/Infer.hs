@@ -18,23 +18,17 @@ import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, tail, zip)
 import Parser (Span)
 
-type Name = Text
-
-type TypeError = Text
-
 data Constraint t = (:~) t t
   deriving (Functor)
+
+infix 1 :~
 
 instance (Show t) => Show (Constraint t) where
   show (a :~ b) = show a ++ " ~ " ++ show b
 
-infix 1 :~
-
 type InferT m t = WriterT [Constraint t] (ExceptT TypeError (ReaderT (Context t) m))
 
 type Infer t = InferT (State (FreshTypeVarStream t)) t
-
-type FreshTypeVarStream t = [Span -> t]
 
 data Context t = Context {locals :: Map.Map Name t}
   deriving (Show)
@@ -44,28 +38,19 @@ type Solve = Except TypeError
 newtype Substitutions t = Substitutions (Map.Map Name t)
   deriving (Show)
 
-class Unifiable t where
+class Unify t where
   unifyingSubstitutions :: t -> t -> Solve (Substitutions t)
   isVar :: Name -> t -> Bool
 
-class Refinable a t where
+class Refine a t where
   apply :: Substitutions t -> a -> a
 
 class Template a where
   freeTypeVars :: a -> Set.Set Name
   instantiate ::
-    (TypeVarStream m t, Refinable a t) =>
+    (TypeVarStream m t, Refine a t) =>
     a ->
     InferT m t a
-
-class (Monad m) => TypeVarStream m t where
-  freshTypeVar :: Span -> InferT m t t
-
-instance TypeVarStream (State (FreshTypeVarStream t)) t where
-  freshTypeVar span = do
-    stream <- get
-    put $ tail stream
-    return $ head stream span
 
 runInfer :: [Span -> t] -> Context t -> Infer t a -> Either TypeError (a, [Constraint t])
 runInfer typeVars env =
@@ -74,7 +59,7 @@ runInfer typeVars env =
     . runExceptT
     . runWriterT
 
-solveConstraints :: (Unifiable t, Refinable t t, Show t) => [Constraint t] -> Either TypeError (Substitutions t)
+solveConstraints :: (Unify t, Refine t t, Show t) => [Constraint t] -> Either TypeError (Substitutions t)
 solveConstraints constraints = runExcept $ solve (Substitutions Map.empty) constraints
   where
     solve ss cs = case cs of
@@ -83,16 +68,10 @@ solveConstraints constraints = runExcept $ solve (Substitutions Map.empty) const
         ss' <- unifyingSubstitutions t t'
         solve (ss' `compose` ss) (apply ss' cs')
 
-compose :: Refinable t t => Substitutions t -> Substitutions t -> Substitutions t
-(Substitutions ss') `compose` (Substitutions ss) = Substitutions $ Map.map (apply (Substitutions ss)) ss' `Map.union` ss
-
 ensure :: Monad m => Constraint t -> InferT m t ()
 ensure c = tell [c]
 
-unify :: Monad m => t -> t -> InferT m t ()
-unify t1 t2 = ensure $ t1 :~ t2
-
-unifyMany :: (Unifiable t, Refinable t t, Show t) => [t] -> [t] -> Solve (Substitutions t)
+unifyMany :: (Unify t, Refine t t, Show t) => [t] -> [t] -> Solve (Substitutions t)
 unifyMany [] [] = return $ Substitutions Map.empty
 unifyMany (t : ts) (t' : ts') =
   do
@@ -101,14 +80,19 @@ unifyMany (t : ts) (t' : ts') =
     return (ss' `compose` ss)
 unifyMany t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
-bind :: (Eq t, Unifiable t, Show t, Template t) => Name -> t -> Solve (Substitutions t)
+bind :: (Eq t, Unify t, Show t, Template t) => Name -> t -> Solve (Substitutions t)
 bind v t
   | isVar v t = return $ Substitutions Map.empty
   | v `Set.member` freeTypeVars t = throwError $ pack $ "binding failed: " ++ show (v, t)
   | otherwise = return (Substitutions $ Map.singleton v t)
 
+with :: Monad m => [(Name, t)] -> InferT m t a -> InferT m t a
+with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
+  where
+    extendContext (v, op) = Map.insert v op . Map.delete v
+
 lookup ::
-  (Show t, Refinable t t, Unifiable t, Template t, TypeVarStream m t) =>
+  (Show t, Refine t t, Unify t, Template t, TypeVarStream m t) =>
   Name ->
   InferT m t t
 lookup v =
@@ -116,13 +100,26 @@ lookup v =
     Nothing -> throwError . pack $ show v ++ " is undefined"
     Just s -> instantiate s
 
-with :: Monad m => [(Name, t)] -> InferT m t a -> InferT m t a
-with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
-  where
-    extendContext (v, op) = Map.insert v op . Map.delete v
+type FreshTypeVarStream t = [Span -> t]
+
+instance TypeVarStream (State (FreshTypeVarStream t)) t where
+  freshTypeVar span = do
+    stream <- get
+    put $ tail stream
+    return $ head stream span
 
 fresh :: (TypeVarStream m t, Monad m) => Span -> InferT m t t
 fresh = freshTypeVar
 
-instance (Functor f, Refinable a t) => Refinable (f a) t where
+class (Monad m) => TypeVarStream m t where
+  freshTypeVar :: Span -> InferT m t t
+
+instance (Functor f, Refine a t) => Refine (f a) t where
   apply ss = fmap (apply ss)
+
+type Name = Text
+
+type TypeError = Text
+
+compose :: Refine t t => Substitutions t -> Substitutions t -> Substitutions t
+(Substitutions ss') `compose` (Substitutions ss) = Substitutions $ Map.map (apply (Substitutions ss)) ss' `Map.union` ss

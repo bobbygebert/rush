@@ -149,7 +149,7 @@ extract name ty locals defaultExpr
             }
         pure $ Var mangled ty
 
-solve :: (Unifiable t, Refinable a t, Refinable t t, Show t) => (a, [Constraint t]) -> a
+solve :: (Unify t, Refine a t, Refine t t, Show t) => (a, [Constraint t]) -> a
 solve (items, constraints) =
   (`apply` items) $
     either (error . show) id $

@@ -118,7 +118,7 @@ instance Template (Constant Type) where
     let s = Substitutions $ Map.fromList $ zip vs vs'
     return $ apply s c
 
-instance Refinable Type Type where
+instance Refine Type Type where
   apply ss@(Substitutions ss') = \case
     t@TInt {} -> t
     TUnit -> TUnit
@@ -128,7 +128,7 @@ instance Refinable Type Type where
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
 
-instance Unifiable Type where
+instance Unify Type where
   unifyingSubstitutions a b = usubs a b
     where
       usubs t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty

@@ -137,13 +137,13 @@ withSpan s = \case
   TVar v _ -> TVar v s
   a :-> b -> withSpan s a :-> withSpan s b
 
-instance Refinable Type Type where
+instance Refine Type Type where
   apply (Substitutions ss) t@(TVar v s) = withSpan s (Map.findWithDefault t v ss)
   apply ss (a :-> b) = apply ss a :-> apply ss b
   apply ss (TTup tys) = TTup $ apply ss <$> tys
   apply _ t@TInt {} = t
 
-instance Unifiable Type where
+instance Unify Type where
   unifyingSubstitutions t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
   unifyingSubstitutions (TTup txs) (TTup tys) = unifyMany txs tys
   unifyingSubstitutions (TVar v _) t = v `bind` t
