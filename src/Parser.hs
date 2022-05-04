@@ -19,7 +19,7 @@ import Text.Megaparsec.Char
 import Prelude hiding (span, unlines)
 
 data Span = Span SourcePos SourcePos
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 class Spanned a
 
@@ -98,7 +98,7 @@ term :: Parser (Expr Span)
 term = choice [try app, atom]
 
 atom :: Parser (Expr Span)
-atom = num <|> var <|> tuple
+atom = num <|> var <|> try (parens term) <|> tuple
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)

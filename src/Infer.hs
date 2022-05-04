@@ -124,10 +124,7 @@ with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
 fresh :: (TypeVarStream m t, Monad m) => Span -> InferT m t t
 fresh = freshTypeVar
 
-instance (Functor f, Refinable t t) => Refinable [f t] t where
-  apply ss = fmap (apply ss)
-
-instance (Functor f, Refinable t t) => Refinable (f t) t where
+instance (Functor f, Refinable a t) => Refinable (f a) t where
   apply ss = fmap (apply ss)
 
 instance (Foldable f, Template t) => Template (f t) where

@@ -88,7 +88,7 @@ typeExpr = \case
     x' <- typeExpr x
     ty <- fresh s
     ensure (typeOf f' :~ typeOf x' :-> ty)
-    App ty <$> typeExpr f <*> typeExpr x
+    return $ App ty f' x'
 
 typeOf :: Expr Type -> Type
 typeOf = \case

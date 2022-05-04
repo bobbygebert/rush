@@ -22,7 +22,7 @@ import qualified IR as Rush
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
 import LLVM.AST.CallingConvention
-import LLVM.AST.Constant (Constant (Add))
+import LLVM.AST.Constant (Constant (Add, type'))
 import LLVM.AST.Constant hiding (Add, ICmp, type')
 import LLVM.AST.Global (Global (Function, GlobalVariable, addrSpace, alignment, basicBlocks, callingConvention, comdat, dllStorageClass, functionAttributes, garbageCollectorName, initializer, isConstant, linkage, metadata, name, parameters, personalityFunction, prefix, returnAttributes, section, threadLocalMode, type', unnamedAddr, visibility))
 import LLVM.AST.IntegerPredicate
@@ -71,25 +71,25 @@ panic :: (Monad m, MonadIRBuilder m, MonadReader Locals m, MonadState BuildState
 panic = const unreachable =<< flip call [] =<< lookup "panic"
 
 buildItem :: Rush.Named Rush.Type -> Build Operand
-buildItem (Rush.Named name constant) = case constant of
+buildItem item@(Rush.Named name constant) = case constant of
   Rush.CNum n ty ->
     define name
       <$> global (fromText name) (asValue ty)
       $ parseIntConst n
-  Rush.CFn tc@(Rush.TClosure _ caps _) (x, tx) b -> do
+  Rush.CFn tc@(Rush.TStruct caps) (x, tx) b -> do
     define name $
       function
         (fromText name)
         [(asArg tc, fromText "closure"), (asArg tx, fromText x)]
         (asValue $ Rush.typeOf b)
-        (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< buildExpr b))
+        (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< mkVal =<< buildExpr b))
   Rush.CFn Rush.TUnit (x, tx) b -> do
     define name $
       function
         (fromText name)
         [(asArg tx, fromText x)]
         (asValue $ Rush.typeOf b)
-        (\[x'] -> with [(x, x')] $ ret =<< buildExpr b)
+        (\[x'] -> with [(x, x')] $ ret =<< mkVal =<< buildExpr b)
   e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 closureFields :: (Monad m, MonadIRBuilder m, MonadModuleBuilder m) => Operand -> Map.Map Text Rush.Type -> m [(Text, Operand)]
@@ -106,12 +106,18 @@ buildExpr ::
   ) =>
   Rush.Expr Rush.Type ->
   m Operand
-buildExpr =
-  deref <=< \case
+buildExpr e =
+  case e of
     Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
-    Rush.Tup xs -> error "todo"
+    Rush.Tup xs -> do
+      t <- alloca (asValue $ Rush.typeOf e) Nothing 0
+      xs' <- mapM buildExpr xs
+      forM_
+        (zip [0 ..] xs')
+        (\(i, x) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> pure x)
+      pure t
     Rush.Var v _ -> lookup v
-    Rush.Add a b -> join $ add <$> buildExpr a <*> buildExpr b
+    Rush.Add a b -> join $ add <$> (mkVal =<< buildExpr a) <*> (mkVal =<< buildExpr b)
     Rush.Match xs arms -> mdo
       let xs' = (\(Rush.Var x _) -> x) <$> xs
       matchBlock <- block
@@ -119,11 +125,11 @@ buildExpr =
       returnBlock <- block `named` "return"
       phi tried
     Rush.App ty f x -> do
-      x' <- buildExpr x
+      f' <- buildExpr f
+      x' <- mkArg (Rush.typeOf x) =<< buildExpr x
       case Rush.typeOf f of
         tc@(Rush.TClosure f' _ _) -> do
-          c' <- alloca (asValue tc) Nothing 0
-          store c' 0 =<< buildExpr f
+          c' <- mkArg tc =<< buildExpr f
           flip call [(c', []), (x', [])] =<< lookup f'
         Rush.TFn tc tx tb -> flip call [(x', [])] =<< buildExpr f
         _ -> error "unreachable"
@@ -138,7 +144,7 @@ buildExpr =
             fieldPtr <- gep closureStorage [int32 0, int32 i]
             store fieldPtr 0 fieldVal
         )
-      load closureStorage 0
+      pure closureStorage
     e -> error $ "TODO: " ++ show e
 
 deref :: MonadIRBuilder m => Operand -> m Operand
@@ -198,7 +204,7 @@ buildMatchArm _ _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x,
 asValue :: Rush.Type -> Type
 asValue = \case
   Rush.TInt _ -> i64
-  Rush.TTup tys -> PointerType (StructureType False $ asValue <$> tys) (AddrSpace 0)
+  Rush.TTup tys -> (StructureType False $ asValue <$> tys)
   Rush.TVar _ _ -> error "unreachable: asValue TVar"
   Rush.TStruct fields -> (StructureType False $ asValue <$> Map.elems fields)
   Rush.TClosure _ caps _ -> (StructureType False $ asValue <$> Map.elems caps)
@@ -207,10 +213,34 @@ asValue = \case
   _ -> error "unreachable"
 
 asArg :: Rush.Type -> Type
-asArg ty = case ty of
-  Rush.TStruct {} -> PointerType (asValue ty) (AddrSpace 0)
-  Rush.TClosure {} -> PointerType (asValue ty) (AddrSpace 0)
-  ty -> asValue ty
+asArg ty
+  | passedByValue ty = asValue ty
+  | otherwise = PointerType (asValue ty) (AddrSpace 0)
+
+mkArg :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
+mkArg ty
+  | passedByValue ty = mkVal
+  | otherwise = mkRef
+
+mkVal :: MonadIRBuilder m => Operand -> m Operand
+mkVal op = case typeOf op of
+  PointerType {} -> deref op
+  _ -> pure op
+
+mkRef :: (MonadIRBuilder m) => Operand -> m Operand
+mkRef op = case typeOf op of
+  PointerType {} -> pure op
+  _ -> do
+    ref <- alloca (typeOf op) Nothing 0
+    store ref 0 op
+    pure ref
+
+passedByValue :: Rush.Type -> Bool
+passedByValue = \case
+  Rush.TTup {} -> False
+  Rush.TStruct {} -> False
+  Rush.TClosure {} -> False
+  _ -> True
 
 parseInt :: Text -> Operand
 parseInt = ConstantOperand . parseIntConst

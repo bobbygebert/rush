@@ -1,4 +1,6 @@
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -11,14 +13,15 @@ import Data.List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, unwords, zip)
+import Debug.Trace
 import Infer
 import Parser (Span, as, emptySpan)
 import qualified Pattern
 
 data Constant t
   = CNum Text t
-  | CFn Type (Text, t) (Expr t)
-  deriving (Show, Eq, Functor)
+  | CFn t (Text, t) (Expr t)
+  deriving (Show, Eq, Functor, Foldable)
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -31,7 +34,7 @@ data Type
   | TClosure Text (Map.Map Text Type) Type
   | TUnit
   | TFn Type Type Type
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 data Expr t
   = Num Text t
@@ -43,42 +46,42 @@ data Expr t
   | Fn Type (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | App t (Expr t) (Expr t)
-  deriving (Eq, Functor)
+  deriving (Eq, Functor, Foldable)
 
 instance Show Type where
   show = \case
     TInt {} -> "Int"
     TUnit -> "()"
     TTup xs -> "(" ++ intercalate "," (show <$> xs) ++ ")"
-    TVar v _ -> unpack v
+    TVar v _ -> "'" ++ unpack v
     TStruct fields ->
-      "{ " ++ intercalate ", " (showField <$> Map.toList fields) ++ " }"
+      "{" ++ intercalate ", " (showField <$> Map.toList fields) ++ "}"
       where
-        showField (x, tx) = unpack x ++ " = " ++ show tx
-    TFn cls x tb -> "{" ++ show cls ++ "} " ++ show x ++ " -> " ++ show tb
-    TClosure f cs _ -> show (TStruct cs) ++ " " ++ unpack f
+        showField (x, tx) = unpack x ++ ": " ++ show tx
+    TFn cls tx tb -> "(" ++ show cls ++ " " ++ show tx ++ " -> " ++ show tb ++ ")"
+    TClosure f cs tf -> "(" ++ show (TStruct cs) ++ " " ++ unpack f ++ ": " ++ show tf ++ ")"
 
 instance (Show t) => Show (Expr t) where
   show = \case
     Num n _ -> unpack n
     Unit -> "()"
     Tup xs -> "(" ++ intercalate "," (show <$> xs) ++ ")"
-    Var v _ -> unpack v
+    Var v ty -> "(" ++ unpack v ++ ": " ++ show ty ++ ")"
     Add a b -> "(" ++ show a ++ " + " ++ show b ++ ")"
     Match xs ps ->
-      "(match " ++ unwords (("(" ++) . (++ ")") . show <$> xs) ++ " { "
+      "(match " ++ unwords (("(" ++) . (++ ")") . show <$> xs) ++ " {"
         ++ intercalate ", " (showArm <$> ps)
-        ++ " })"
+        ++ "})"
       where
         showArm (ps, b) = unwords (("(" ++) . (++ ")") . show <$> ps) ++ " -> " ++ show b
     Fn cls (x, tx) tb -> "(f = {" ++ show cls ++ "} (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show tb ++ ")"
-    Closure f fields _ ->
+    Closure name fields f ->
       "({" ++ intercalate ", " (showCapture <$> Map.toList fields) ++ "} "
-        ++ unpack f
+        ++ show f
         ++ ")"
       where
         showCapture (x, e) = unpack x ++ " = " ++ show e
-    App _ f x -> "(" ++ show f ++ " " ++ show x ++ ")"
+    App ty f x -> "((" ++ show f ++ " " ++ show x ++ "): " ++ show ty ++ ")"
 
 instance Template Type where
   freeTypeVars = \case
@@ -103,6 +106,11 @@ instance Template Type where
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
 
+instance (Refinable t t) => Refinable (Constant t) t where
+  apply ss = \case
+    CNum n ty -> CNum n (apply ss ty)
+    CFn tc (x, tx) b -> CFn (apply ss tc) (x, apply ss tx) (apply ss b)
+
 instance Refinable Type Type where
   apply ss@(Substitutions ss') = \case
     t@TInt {} -> t
@@ -114,19 +122,21 @@ instance Refinable Type Type where
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
 
 instance Unifiable Type where
-  unifyingSubstitutions t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
-  unifyingSubstitutions (TTup txs) (TTup tys) = unifyMany txs tys
-  unifyingSubstitutions (TVar v _) t = v `bind` t
-  unifyingSubstitutions t (TVar v _) = v `bind` t
-  unifyingSubstitutions (TStruct fields) (TStruct fields') =
-    unifyMany (snd <$> Map.toAscList fields) (snd <$> Map.toAscList fields')
-  unifyingSubstitutions ty@(TClosure f c b) ty'@(TClosure f' c' b') =
-    unifyMany (b : Map.elems c) (b' : Map.elems c')
-  unifyingSubstitutions tf@TFn {} tc@TClosure {} = unifyingSubstitutions tc tf
-  unifyingSubstitutions tc@(TClosure _ _ tf) tf'@(TFn tc' _ _) =
-    unifyMany [tf, tc] [tf', tc']
-  unifyingSubstitutions (TFn cls a b) (TFn cls' a' b') = unifyMany [cls, a, b] [cls', a', b']
-  unifyingSubstitutions t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
+  unifyingSubstitutions a b = trace ("usubs: " ++ show a ++ " :~ " ++ show b) usubs a b
+    where
+      usubs t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
+      usubs (TTup txs) (TTup tys) = unifyMany txs tys
+      usubs (TVar v _) t = v `bind` t
+      usubs t (TVar v _) = v `bind` t
+      usubs (TStruct fields) (TStruct fields') =
+        unifyMany (snd <$> Map.toAscList fields) (snd <$> Map.toAscList fields')
+      usubs ty@(TClosure f c b) ty'@(TClosure f' c' b') =
+        unifyMany (b : Map.elems c) (b' : Map.elems c')
+      usubs tf@TFn {} tc@TClosure {} = usubs tc tf
+      usubs (TClosure _ cs tf) tf'@(TFn tc' _ _) =
+        unifyMany [tf, TStruct cs] [tf', tc']
+      usubs (TFn cls a b) (TFn cls' a' b') = unifyMany [cls, a, b] [cls', a', b']
+      usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
   isVar v (TVar tv _) = v == tv
   isVar _ _ = False

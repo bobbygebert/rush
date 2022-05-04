@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
-module Eval (eval, spec, Constant (..), Named (..)) where
+module Eval (eval, spec, unConst, Constant (..), Named (..)) where
 
 import Control.Monad (msum)
 import qualified Data.Map as Map
