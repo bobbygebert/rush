@@ -31,7 +31,11 @@ import qualified Type as Rush
 import Prelude hiding (init, lookup)
 
 ir :: [Rush.Named Rush.Type] -> [IR.Named Type]
-ir = generate . solve . runBuild . (unpack <=< closeOver)
+ir =
+  generate
+    . solve
+    . runBuild
+    . (unpack <=< closeOver)
   where
     unpack = const $ gets $ reverse . definitions
     closeOver [] = return ()
@@ -119,6 +123,7 @@ monomorphize locals e = case e of
   Num {} -> pure e
   Unit -> pure e
   Tup xs -> Tup <$> mapM (monomorphize locals) xs
+  List ty xs -> List ty <$> mapM (monomorphize locals) xs
   Var v ty -> extract v ty locals e
   Add a b -> Add <$> monomorphize locals a <*> monomorphize locals b
   Match xs as -> Match <$> mapM (monomorphize locals) xs <*> mapM match as
@@ -165,6 +170,7 @@ init :: Rush.Type -> Build Type
 init = \case
   Rush.TInt s -> pure $ TInt s
   Rush.TTup tys -> TTup <$> mapM init tys
+  Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v s
   a Rush.:-> b -> do
     ta <- init a
@@ -189,6 +195,11 @@ closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
   Rush.Num n ty -> Num n <$> init ty
   Rush.Tup xs -> Tup <$> mapM (closeOverExpr parent) xs
+  Rush.List ty xs -> do
+    xs' <- mapM (closeOverExpr parent) xs
+    ty' <- init ty
+    --mapM_ (ensure . (ty' :~) . typeOf) xs'
+    pure $ List ty' xs'
   Rush.Var x ty -> Var x <$> lookup x
   Rush.Add a b -> Add <$> closeOverExpr parent a <*> closeOverExpr parent b
   Rush.Match xs as -> Match <$> mapM (closeOverExpr parent) xs <*> mapM match as
@@ -201,6 +212,11 @@ closeOverExpr parent e = case e of
         Pattern.Binding b ty -> Pattern.Binding b <$> init ty
         Pattern.Num n ty -> Pattern.Num n <$> init ty
         Pattern.Tup xs -> Pattern.Tup <$> mapM closeOverPattern xs
+        Pattern.List ty xs -> do
+          xs' <- mapM closeOverPattern xs
+          ty' <- init ty
+          --mapM_ (ensure . (ty' :~) . typeOfP) xs'
+          pure $ Pattern.List ty' xs'
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent
     tx' <- init tx
@@ -224,6 +240,7 @@ closeOverExpr parent e = case e of
           TFn _ tx tb -> (tx, tb)
           ty' -> error $ show (ty, ty')
     ensure $ typeOf x' :~ tx'
+    ensure . (ty' :~) =<< init ty
     return $ App ty' f' x'
 
 captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))
@@ -241,6 +258,7 @@ captures bound =
         Rush.Num {} -> return Map.empty
         Rush.Add a b -> Map.union <$> captures bound a <*> captures bound b
         Rush.Tup xs -> unionMany <$> mapM (captures bound) xs
+        Rush.List _ xs -> unionMany <$> mapM (captures bound) xs
         Rush.Match xs ps -> Map.union <$> bxs <*> bps
           where
             bxs = unionMany <$> mapM (captures bound) xs
@@ -257,6 +275,7 @@ typedBindings = \case
   Pattern.Binding x tx -> [(x, tx)]
   Pattern.Num _ _ -> []
   Pattern.Tup ps -> typedBindings =<< ps
+  Pattern.List _ ps -> typedBindings =<< ps
 
 freshName :: Build Text
 freshName = do

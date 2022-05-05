@@ -29,6 +29,7 @@ import Prelude hiding (lookup)
 data Type
   = TInt Span
   | TTup [Type]
+  | TList Type
   | TVar Text Span
   | Type :-> Type
   deriving (Eq)
@@ -37,6 +38,7 @@ instance Show Type where
   show = \case
     TInt _ -> "Int"
     TTup xs -> "(" ++ intercalate ", " (show <$> xs) ++ ")"
+    TList tx -> "[" ++ show tx ++ "]"
     TVar txt _ -> unpack txt
     a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
 
@@ -60,6 +62,9 @@ typeExpr :: Expr Span -> Infer Type (Expr Type)
 typeExpr = \case
   Num n c -> pure $ Num n (TInt c)
   Tup xs -> Tup <$> mapM typeExpr xs
+  List c xs -> do
+    ty <- fresh c
+    List ty <$> mapM (`constrained` (ty :~)) xs
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> Add <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
   -- TODO: unify tarms
@@ -94,6 +99,7 @@ typeOf :: Expr Type -> Type
 typeOf = \case
   Num _ ty -> ty
   Tup xs -> TTup $ typeOf <$> xs
+  List ty _ -> TList ty
   Var _ ty -> ty
   Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
@@ -106,18 +112,27 @@ typeOfP = \case
   Pattern.Binding _ ty -> ty
   Pattern.Num _ ty -> ty
   Pattern.Tup pats -> TTup $ typeOfP <$> pats
+  Pattern.List ty _ -> TList ty
 
 bindings :: Pattern.Pattern Type -> [(Text, Type)]
 bindings = \case
   Pattern.Binding x tx -> [(x, tx)]
   Pattern.Num _ _ -> []
   Pattern.Tup ps -> bindings =<< ps
+  Pattern.List _ ps -> bindings =<< ps
 
 typePattern :: Pattern.Pattern Span -> Infer Type (Pattern.Pattern Type)
 typePattern = \case
   Pattern.Num n s -> pure $ Pattern.Num n (TInt s)
   Pattern.Binding b s -> Pattern.Binding b <$> fresh s
   Pattern.Tup ps -> Pattern.Tup <$> mapM typePattern ps
+  Pattern.List s ps -> do
+    ty <- fresh s
+    ps' <- forM ps $ \p -> do
+      p' <- typePattern p
+      ensure $ ty :~ typeOfP p'
+      pure p'
+    pure $ Pattern.List ty ps'
 
 freshTypeVars :: [Span -> Type]
 freshTypeVars = TVar . pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
@@ -127,6 +142,7 @@ spanOf :: Type -> Span
 spanOf = \case
   TInt s -> s
   TTup tys -> spanOf $ head tys
+  TList tx -> spanOf tx
   TVar _ s -> s
   a :-> b -> spanOf a
 
@@ -134,6 +150,7 @@ withSpan :: Span -> Type -> Type
 withSpan s = \case
   TInt _ -> TInt s
   TTup tys -> TTup $ withSpan s <$> tys
+  TList tx -> TList $ withSpan s tx
   TVar v _ -> TVar v s
   a :-> b -> withSpan s a :-> withSpan s b
 
@@ -141,11 +158,13 @@ instance Refine Type Type where
   apply (Substitutions ss) t@(TVar v s) = withSpan s (Map.findWithDefault t v ss)
   apply ss (a :-> b) = apply ss a :-> apply ss b
   apply ss (TTup tys) = TTup $ apply ss <$> tys
+  apply ss (TList tx) = TList $ apply ss tx
   apply _ t@TInt {} = t
 
 instance Unify Type where
   unifyingSubstitutions t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
   unifyingSubstitutions (TTup txs) (TTup tys) = unifyMany txs tys
+  unifyingSubstitutions (TList tx) (TList ty) = unifyingSubstitutions tx ty
   unifyingSubstitutions (TVar v _) t = v `bind` t
   unifyingSubstitutions t (TVar v _) = v `bind` t
   unifyingSubstitutions (t1 :-> t2) (t3 :-> t4) = unifyMany [t1, t2] [t3, t4]
@@ -158,6 +177,7 @@ instance Template Type where
   freeTypeVars = \case
     TInt _ -> Set.empty
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
+    TList tx -> freeTypeVars tx
     a :-> b -> freeTypeVars a `Set.union` freeTypeVars b
     TVar v _ -> Set.singleton v
 
@@ -168,6 +188,7 @@ instance Template Type where
     return $ case ty of
       TInt {} -> ty
       TTup tys -> TTup $ apply s <$> tys
+      TList tx -> TList $ apply s tx
       TVar {} -> ty
       a :-> b -> apply s a :-> apply s b
 

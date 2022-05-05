@@ -41,6 +41,7 @@ eval ctx =
    in \case
         Num n ty -> CNum n ty
         Tup {} -> error "todo"
+        List {} -> error "todo"
         Var v ty -> get v
         Add a b -> case (eval ctx a, eval ctx b) of
           (CNum a ty@TInt {}, CNum b TInt {}) ->
@@ -70,6 +71,7 @@ match ctx (x : xs) (p : ps) b =
             eq (CNum a _) (CNum b _) = a == b
             eq _ _ = error "unreachable"
         Pattern.Tup {} -> error "todo"
+        Pattern.List {} -> error "todo"
 match _ _ _ _ = error "unreachable"
 
 with :: (Text, c) -> Context c -> (Context c -> f) -> f

@@ -205,3 +205,15 @@ spec = describe "rush build" $ do
         ]
     o <- evalInt r d "f(1)"
     o `shouldBe` "2"
+
+  it "builds lists" $ do
+    r <-
+      rush
+        [ "list 2 = [1, 2]",
+          "sum [x, y] = x + y",
+          "f x = sum (list x)"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(2)"
+    o `shouldBe` "3"

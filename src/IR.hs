@@ -28,6 +28,7 @@ data Named t = Named Text (Constant t)
 data Type
   = TInt Span
   | TTup [Type]
+  | TList Type
   | TVar Text Span
   | TStruct (Map.Map Text Type)
   | TClosure Text (Map.Map Text Type) Type
@@ -39,6 +40,7 @@ data Expr t
   = Num Text t
   | Unit
   | Tup [Expr t]
+  | List t [Expr t]
   | Var Text t
   | Add (Expr t) (Expr t)
   | Match [Expr t] [([Pattern.Pattern t], Expr t)]
@@ -52,6 +54,7 @@ instance Show Type where
     TInt {} -> "Int"
     TUnit -> "()"
     TTup xs -> "(" ++ intercalate "," (show <$> xs) ++ ")"
+    TList tx -> "[" ++ show tx ++ "]"
     TVar v _ -> "'" ++ unpack v
     TStruct fields ->
       "{" ++ intercalate ", " (showField <$> Map.toList fields) ++ "}"
@@ -65,6 +68,7 @@ instance (Show t) => Show (Expr t) where
     Num n _ -> unpack n
     Unit -> "()"
     Tup xs -> "(" ++ intercalate "," (show <$> xs) ++ ")"
+    List _ xs -> "[" ++ intercalate "," (show <$> xs) ++ "]"
     Var v ty -> "(" ++ unpack v ++ ": " ++ show ty ++ ")"
     Add a b -> "(" ++ show a ++ " + " ++ show b ++ ")"
     Match xs ps ->
@@ -87,6 +91,7 @@ instance Template Type where
     TInt _ -> Set.empty
     TUnit -> Set.empty
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
+    TList tx -> freeTypeVars tx
     TVar v _ -> Set.singleton v
     TStruct fields -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems fields)
     TClosure _ c f ->
@@ -102,6 +107,7 @@ instance Template Type where
       TInt {} -> ty
       TUnit -> ty
       TTup tys -> TTup $ apply s <$> tys
+      TList tx -> TList $ apply s tx
       TVar {} -> ty
       TStruct fields -> TStruct $ Map.map (apply s) fields
       TClosure f c t -> TClosure f c (apply s t)
@@ -123,6 +129,7 @@ instance Refine Type Type where
     t@TInt {} -> t
     TUnit -> TUnit
     TTup tys -> TTup $ apply ss <$> tys
+    TList tx -> TList $ apply ss tx
     t@(TVar v s) -> withSpan s (Map.findWithDefault t v ss')
     TStruct fields -> TStruct $ apply ss <$> fields
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
@@ -133,6 +140,7 @@ instance Unify Type where
     where
       usubs t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
       usubs (TTup txs) (TTup tys) = unifyMany txs tys
+      usubs (TList tx) (TList ty) = unifyingSubstitutions tx ty
       usubs (TVar v _) t = v `bind` t
       usubs t (TVar v _) = v `bind` t
       usubs (TStruct fields) (TStruct fields') =
@@ -158,6 +166,7 @@ typeOf = \case
   Num _ ty -> ty
   Unit -> TUnit
   Tup xs -> TTup $ typeOf <$> xs
+  List tx _ -> TList tx
   Var _ ty -> ty
   Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
@@ -166,11 +175,19 @@ typeOf = \case
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   App ty f x -> ty
 
+typeOfP :: Pattern.Pattern Type -> Type
+typeOfP = \case
+  Pattern.Binding _ ty -> ty
+  Pattern.Num _ ty -> ty
+  Pattern.Tup pats -> TTup $ typeOfP <$> pats
+  Pattern.List ty _ -> TList ty
+
 -- TODO: Merge Spans
 spanOf :: Type -> Span
 spanOf = \case
   TInt s -> s
   TTup tys -> spanOf $ head tys
+  TList tx -> spanOf tx
   TVar _ s -> s
   TStruct _ -> emptySpan
   TClosure _ c tf -> spanOf tf
@@ -181,6 +198,7 @@ withSpan :: Span -> Type -> Type
 withSpan s = \case
   TInt _ -> TInt s
   TTup tys -> TTup $ withSpan s <$> tys
+  TList tx -> TList $ withSpan s tx
   TVar v _ -> TVar v s
   TStruct fields -> TStruct $ withSpan s <$> fields
   TClosure f c tf -> TClosure f (Map.map (withSpan s) c) (withSpan s tf)

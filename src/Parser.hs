@@ -63,7 +63,7 @@ pats :: Parser [Pattern.Pattern Span]
 pats = (:) <$> pat <*> many (try (hspace *> pat))
 
 pat :: Parser (Pattern.Pattern Span)
-pat = binding <|> numPat <|> tuplePat
+pat = binding <|> numPat <|> listPat <|> tuplePat
 
 binding :: Parser (Pattern.Pattern Span)
 binding = uncurry Pattern.Binding <$> spanned lowerIdent
@@ -78,6 +78,15 @@ tuple :: Parser (Expr Span)
 tuple = Tup <$> parens ((:) <$> (expr <* sep) <*> (expr `sepBy1` sep))
   where
     sep = (hspace *> char ',') *> hspace
+
+listPat :: Parser (Pattern.Pattern Span)
+listPat = listLiteralPat
+
+listLiteralPat :: Parser (Pattern.Pattern Span)
+listLiteralPat = uncurry (flip Pattern.List) <$> spanned (brackets (pat `sepBy` (char ',' *> hspace)))
+
+listLiteral :: Parser (Expr Span)
+listLiteral = uncurry (flip List) <$> spanned (brackets (expr `sepBy` (char ',' *> hspace)))
 
 app :: Parser (Expr Span)
 app = do
@@ -100,7 +109,7 @@ term :: Parser (Expr Span)
 term = choice [try app, atom]
 
 atom :: Parser (Expr Span)
-atom = num <|> var <|> try tuple <|> parens expr
+atom = num <|> var <|> listLiteral <|> try tuple <|> parens expr
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
@@ -117,12 +126,18 @@ eq = void (hspace *> char '=' <* hspace)
 parens :: Parser a -> Parser a
 parens = between (char '(') (char ')')
 
+brackets :: Parser a -> Parser a
+brackets = between (char '[') (char ']')
+
 spanned :: Parser a -> Parser (a, Span)
 spanned p = do
   s <- getSourcePos
   a <- p
   e <- getSourcePos
   return (a, Span s e)
+
+justSpan :: Parser a -> Parser Span
+justSpan = (snd <$>) . spanned
 
 {-
  ____
@@ -141,6 +156,7 @@ spec = Hspec.describe "Parser" $ do
   Hspec.describe "pat" patSpec
   Hspec.describe "constant" constantSpec
   Hspec.describe "expr" exprSpec
+  Hspec.describe "list" listSpec
   Hspec.describe "lowerIdent" lowerIdentSpec
   Hspec.describe "spanned" spannedSpec
 
@@ -231,6 +247,20 @@ exprSpec = do
       "1 + 2"
       as
       (Add (Num "1" ()) (Num "2" ()))
+
+listSpec = do
+  expr <* eof
+    & parses
+      "empty list"
+      "[]"
+      as
+      (List () [])
+  expr <* eof
+    & parses
+      "non-empty list"
+      "[1, 2]"
+      as
+      (List () [Num "1" (), Num "2" ()])
 
 lowerIdentSpec =
   Hspec.it

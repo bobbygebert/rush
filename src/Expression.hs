@@ -10,6 +10,7 @@ import qualified Pattern
 data Expr c
   = Num Text c
   | Tup [Expr c]
+  | List c [Expr c]
   | Var Text c
   | Add (Expr c) (Expr c)
   | Match [Expr c] [([Pattern.Pattern c], Expr c)]
@@ -20,6 +21,7 @@ data Expr c
 instance Traversable Expr where
   traverse f (Num n c) = Num n <$> f c
   traverse f (Tup xs) = Tup <$> traverse (traverse f) xs
+  traverse f (List c xs) = List <$> f c <*> traverse (traverse f) xs
   traverse f (Var v c) = Var v <$> f c
   traverse f (Add a b) = Add <$> traverse f a <*> traverse f b
   traverse f (Match x b) =
