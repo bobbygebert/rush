@@ -9,7 +9,8 @@
 module Monomorphize where
 
 import Control.Monad.Except
-import Control.Monad.Reader
+import Control.Monad.Reader hiding (local)
+import qualified Control.Monad.Reader as Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Bifunctor
@@ -41,9 +42,9 @@ ir =
     closeOver [] = return ()
     closeOver (c@(Rush.Named n e) : cs) = do
       ty <- closeOverConstant c
-      with [(n, ty)] $ closeOver cs
+      withGlobal [(n, ty)] $ closeOver cs
 
-type Build = InferT (State BuildState) Type
+type Build = InferT (State BuildState) Type (Definitions Type)
 
 data BuildState = BuildState {definitions :: [IR.Named Type], names :: [Text], constraints :: [Constraint Type]}
 
@@ -58,11 +59,11 @@ runBuild :: Build a -> (a, [Constraint Type])
 runBuild =
   either (error . show) id
     . flip evalState (BuildState [] freshNames [])
-    . flip runReaderT (Context Map.empty)
+    . flip runReaderT (Definitions (Context Map.empty) (Context Map.empty))
     . runExceptT
     . runWriterT
 
-type Generate = InferT (State GenerateState) Type
+type Generate = InferT (State GenerateState) Type (Definitions Type)
 
 data GenerateState = GenerateState
   { generated :: Map.Map (Text, Type) (IR.Constant Type),
@@ -83,7 +84,7 @@ runGenerate types templates =
   solve
     . either (error . show) id
     . flip evalState (GenerateState Map.empty templates (pack . show <$> [0 ..]))
-    . flip runReaderT types
+    . flip runReaderT Definitions {local = Context Map.empty, global = types}
     . runExceptT
     . runWriterT
     . unpack
@@ -91,7 +92,7 @@ runGenerate types templates =
     unpack as = do
       as' <- as
       gs <- gets $ Map.toList . generated
-      let gs' = (\((name, _), c) -> IR.Named name c) <$> gs
+      let gs' = (\((name, ty), c) -> IR.Named name c) <$> gs
       return $ gs' ++ as'
 
 generate :: [IR.Named Type] -> [IR.Named Type]
@@ -133,8 +134,10 @@ monomorphize locals e = case e of
          in (ps,) <$> monomorphize (locals `Set.union` bs) b
   Fn tc (x, tx) b -> Fn tc (x, tx) <$> monomorphize (Set.insert x locals) b
   Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
+  Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
 
+-- TODO: Figure out why union closure type isn't being inferred.
 extract :: Text -> Type -> Set.Set Text -> Expr Type -> Generate (Expr Type)
 extract name ty locals defaultExpr
   | name `Set.member` locals = pure defaultExpr
@@ -144,8 +147,9 @@ extract name ty locals defaultExpr
       Nothing -> pure defaultExpr
       Just c -> do
         state <- get
-        let mangled = "_" <> head (numbers state) <> "_" <> name
+        c' <- monomorphize Set.empty (unConst c)
         let ty' = typeOf $ unConst c
+        let mangled = "_" <> pack (show ty') <> "_" <> name
         ensure $ ty' :~ ty
         put
           state
@@ -154,7 +158,7 @@ extract name ty locals defaultExpr
             }
         pure $ Var mangled ty
 
-solve :: (Unify t, Refine a t, Refine t t, Show t) => (a, [Constraint t]) -> a
+solve :: (Unify t, Refine a t, Refine t t, Show t, Eq t, Show a) => (a, [Constraint t]) -> a
 solve (items, constraints) =
   (`apply` items) $
     either (error . show) id $
@@ -182,12 +186,11 @@ closeOverConstant :: Rush.Named Rush.Type -> Build Type
 closeOverConstant (Rush.Named name c) = ty'
   where
     ty' = (typeOf <$>) . define name =<< c'
-    ty = init (Rush.typeOf $ Rush.unConst c)
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
       Rush.CLambda (x, tx) b -> do
-        tf <- ty
-        tx <- ty <&> (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
+        tf <- init (Rush.typeOf $ Rush.unConst c)
+        let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
         b' <- with [(name, tf), (x, tx)] $ closeOverExpr name b
         return $ IR.CFn TUnit (x, tx) b'
 
@@ -197,12 +200,35 @@ closeOverExpr parent e = case e of
   Rush.Tup xs -> Tup <$> mapM (closeOverExpr parent) xs
   Rush.List ty xs -> do
     xs' <- mapM (closeOverExpr parent) xs
-    ty' <- init ty
-    --mapM_ (ensure . (ty' :~) . typeOf) xs'
-    pure $ List ty' xs'
+    case ty of
+      _ Rush.:-> _ -> do
+        let cs = closures xs'
+        let tys = Map.elems cs
+        let ty' = TUnion (closures xs')
+        ensure . (:~ ty') =<< init ty
+        pure $ List ty' (unions cs xs')
+      _ -> do
+        ty' <- init ty
+        mapM_ (ensure . (ty' :~) . typeOf) xs'
+        pure $ List ty' xs'
+    where
+      closures xs' = Map.fromList $ discriminatedType <$> xs'
+      discriminatedType x = case typeOf x of
+        tc@(TClosure f _ _) -> (f, tc)
+        _ -> error "unreachable"
+      discriminatedVal x = case typeOf x of
+        TClosure f _ _ -> (f, x)
+        _ -> error "unreachable"
+      unions closures xs' = uncurry (Union closures) . discriminatedVal <$> xs'
   Rush.Var x ty -> Var x <$> lookup x
   Rush.Add a b -> Add <$> closeOverExpr parent a <*> closeOverExpr parent b
-  Rush.Match xs as -> Match <$> mapM (closeOverExpr parent) xs <*> mapM match as
+  Rush.Match xs as -> do
+    xs' <- mapM (closeOverExpr parent) xs
+    as' <- mapM match as
+    let tas = fmap typeOfP . fst <$> as'
+    let txs = typeOf <$> xs'
+    mapM_ (mapM_ (ensure . uncurry (:~))) (zip txs <$> tas)
+    return $ Match xs' as'
     where
       match (ps, b) = do
         ps' <- mapM closeOverPattern ps
@@ -215,7 +241,7 @@ closeOverExpr parent e = case e of
         Pattern.List ty xs -> do
           xs' <- mapM closeOverPattern xs
           ty' <- init ty
-          --mapM_ (ensure . (ty' :~) . typeOfP) xs'
+          mapM_ (ensure . (ty' :~) . typeOfP) xs'
           pure $ Pattern.List ty' xs'
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent

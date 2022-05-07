@@ -1,10 +1,12 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
 module Expression (Expr (..)) where
 
-import Data.Text
+import Data.List (intercalate)
+import Data.Text hiding (intercalate, unwords)
 import qualified Pattern
 
 data Expr c
@@ -16,7 +18,23 @@ data Expr c
   | Match [Expr c] [([Pattern.Pattern c], Expr c)]
   | Lambda (Text, c) (Expr c)
   | App c (Expr c) (Expr c)
-  deriving (Show, Eq, Foldable, Functor)
+  deriving (Eq, Foldable, Functor)
+
+instance (Show t) => Show (Expr t) where
+  show = \case
+    Num n _ -> unpack n
+    Tup xs -> "(" ++ intercalate ", " (show <$> xs) ++ ")"
+    List _ xs -> "[" ++ intercalate ", " (show <$> xs) ++ "]"
+    Var v ty -> "(" ++ unpack v ++ ": " ++ show ty ++ ")"
+    Add a b -> "(" ++ show a ++ " + " ++ show b ++ ")"
+    Match xs ps ->
+      "(match " ++ unwords (("(" ++) . (++ ")") . show <$> xs) ++ " {"
+        ++ intercalate ", " (showArm <$> ps)
+        ++ "})"
+      where
+        showArm (ps, b) = unwords (("(" ++) . (++ ")") . show <$> ps) ++ " -> " ++ show b
+    Lambda (x, tx) b -> "((" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b ++ ")"
+    App ty f x -> "(" ++ show f ++ " " ++ show x ++ ": " ++ show ty ++ ")"
 
 instance Traversable Expr where
   traverse f (Num n c) = Num n <$> f c

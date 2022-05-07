@@ -14,7 +14,7 @@ import Data.List hiding (lookup)
 import qualified Data.List as List hiding (lookup)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.Text hiding (foldr, head, intercalate, null, zip)
+import Data.Text hiding (foldr, head, intercalate, null, unlines, zip)
 import Debug.Trace
 import Expression
 import GHC.RTS.Flags (ProfFlags (descrSelector))
@@ -39,20 +39,20 @@ instance Show Type where
     TInt _ -> "Int"
     TTup xs -> "(" ++ intercalate ", " (show <$> xs) ++ ")"
     TList tx -> "[" ++ show tx ++ "]"
-    TVar txt _ -> unpack txt
-    a :-> b -> "(" ++ show a ++ " -> " ++ show b ++ ")"
+    TVar txt _ -> "'" ++ unpack txt
+    a :-> b -> show a ++ " -> " ++ show b
 
 infixr 9 :->
 
 typeItem :: Context Type -> Item Span -> Either TypeError (Item Type)
 typeItem context (Item n s e) = normalize <$> (solve =<< infer)
   where
-    infer = runInfer freshTypeVars context $ do
+    infer = runInfer freshTypeVars Definitions {local = Context Map.empty, global = context} $ do
       ty <- fresh s
       e' <- with [(n, ty)] $ typeExpr e
       ensure (ty :~ typeOf e')
       return $ Item n ty e'
-    solve (item, cs) = flip apply item <$> solveConstraints cs
+    solve (item, cs) = (\ss@(Substitutions ss') -> trace (unlines $ show item : (show <$> Map.toList ss')) (apply ss item)) <$> trace (unlines $ show item : (show <$> cs)) solveConstraints cs
     normalize item@(Item _ ty _) = apply (Substitutions ss) item
       where
         tvs = Set.toList (freeTypeVars ty)

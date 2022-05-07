@@ -11,7 +11,7 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Text hiding (foldr, foldr1)
 import Expression
-import Infer (Context (Context, locals))
+import Infer (Context (Context, defs))
 import Parser (Span, emptySpan, span)
 import Pattern (Pattern)
 import qualified Pattern
@@ -37,7 +37,7 @@ instance Traversable Named where
 eval :: Context (Constant Type) -> Expr Type -> Constant Type
 eval ctx =
   let get = lookup ctx
-      extend (x, c) = Context . Map.insert x c . Map.delete x . locals
+      extend (x, c) = Context . Map.insert x c . Map.delete x . defs
    in \case
         Num n ty -> CNum n ty
         Tup {} -> error "todo"
@@ -78,7 +78,7 @@ with :: (Text, c) -> Context c -> (Context c -> f) -> f
 with (x, c) ctx f = f (extend (x, c) ctx)
 
 extend :: (Text, c) -> Context c -> Context c
-extend (x, c) = Context . Map.insert x c . Map.delete x . locals
+extend (x, c) = Context . Map.insert x c . Map.delete x . defs
 
 unConst :: Constant Type -> Expr Type
 unConst = \case
@@ -86,7 +86,7 @@ unConst = \case
   CNum n ty -> Num n ty
 
 lookup :: Context (Constant Type) -> Text -> Constant Type
-lookup ctx = fromMaybe (error $ show ctx) . flip Map.lookup (locals ctx)
+lookup ctx = fromMaybe (error $ show ctx) . flip Map.lookup (defs ctx)
 
 {-
  ____
@@ -144,7 +144,7 @@ spec = describe "Eval" $ do
       )
       `shouldBe` CNum "3" (TInt s4)
 
-emptyContext = Context {locals = Map.empty}
+emptyContext = Context {defs = Map.empty}
 
 s0 = Parser.span (8, 8) (8, 8)
 

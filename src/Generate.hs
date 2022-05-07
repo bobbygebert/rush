@@ -14,10 +14,11 @@ import Data.Char
 import Data.Function
 import Data.List (elemIndex)
 import qualified Data.Map as Map
+import Data.Maybe (fromJust)
+import qualified Data.Set as Set
 import Data.String
 import Data.Text hiding (filter, foldr, head, length, null, tail, unlines, zip)
 import Data.Text.Lazy (toStrict)
-import Debug.Trace
 import qualified IR as Rush
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
@@ -32,6 +33,7 @@ import LLVM.AST.Typed (Typed (typeOf))
 import LLVM.AST.Visibility
 import LLVM.IRBuilder hiding (buildModule, fresh)
 import LLVM.Prelude hiding (EQ, lookup, null)
+import LLVM.Pretty (ppll)
 import Parser (emptySpan)
 import Pattern
 import Test.Hspec
@@ -39,43 +41,49 @@ import Prelude hiding (EQ, lookup, null)
 
 data BuildState = BuildState
   { globals :: Map.Map Text Operand,
-    types :: Map.Map Rush.Type Type,
+    types :: Set.Set Name,
     names :: [Text]
   }
 
 data Locals = Locals {locals :: Map.Map Text Operand, closure :: Maybe Operand, captures :: [Text]}
+  deriving (Show)
 
 type Build = ModuleBuilderT (ReaderT Locals (State BuildState))
 
 buildModule :: String -> [Rush.Named Rush.Type] -> Module
 buildModule name =
-  flip evalState (BuildState Map.empty Map.empty freshNames)
+  flip evalState (BuildState Map.empty Set.empty freshNames)
     . flip runReaderT (Locals Map.empty Nothing [])
     . buildModuleT (fromString name)
     . withPanic
     . withMalloc
-    . mapM_ buildItem
+    . (mapM_ buildItem <=< mapM declareItem)
+
+declareItem :: Rush.Named Rush.Type -> Build (Rush.Named Rush.Type)
+declareItem item@(Rush.Named name constant) =
+  item <$ declare name (Rush.typeOf (Rush.unConst constant))
 
 buildItem :: Rush.Named Rush.Type -> Build Operand
-buildItem item@(Rush.Named name constant) = case constant of
-  Rush.CNum n ty ->
-    define name
-      =<< global (fromText name)
-      <$> asValue ty
-      <*> pure (parseIntConst n)
-  Rush.CFn tc@(Rush.TStruct caps) (x, tx) b -> do
-    define name
-      =<< function (fromText name)
-      <$> (zip <$> mapM asArg [tc, tx] <*> pure (fromText <$> ["closure", x]))
-      <*> asValue (Rush.typeOf b)
-      <*> pure (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< mkVal =<< buildExpr b))
-  Rush.CFn Rush.TUnit (x, tx) b -> do
-    define name
-      =<< function (fromText name)
-      <$> (asArg tx <&> (: []) . (,fromText x))
-      <*> asValue (Rush.typeOf b)
-      <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkVal =<< buildExpr b)
-  e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
+buildItem item@(Rush.Named name constant) =
+  case constant of
+    Rush.CNum n ty -> do
+      define name
+        =<< global (fromText name)
+        <$> asValue ty
+        <*> pure (parseIntConst n)
+    Rush.CFn tc@(Rush.TStruct caps) (x, tx) b -> do
+      define name
+        =<< function (fromText name)
+        <$> (zip <$> mapM asArg [tc, tx] <*> pure (fromText <$> ["closure", x]))
+        <*> asValue (Rush.typeOf b)
+        <*> pure (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< mkRet (Rush.typeOf b) =<< buildExpr b))
+    Rush.CFn Rush.TUnit (x, tx) b -> do
+      define name
+        =<< function (fromText name)
+        <$> (asArg tx <&> (: []) . (,fromText x))
+        <*> asValue (Rush.typeOf b)
+        <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkRet (Rush.typeOf b) =<< buildExpr b)
+    e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 buildExpr ::
   (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
@@ -85,89 +93,117 @@ buildExpr e =
   case e of
     Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
     Rush.Var v _ -> lookup v
-    Rush.Add a b -> join $ add <$> (mkVal =<< buildExpr a) <*> (mkVal =<< buildExpr b)
+    Rush.Add a b ->
+      join $
+        add
+          <$> (mkVal (Rush.typeOf a) =<< buildExpr a)
+          <*> (mkVal (Rush.typeOf b) =<< buildExpr b)
     Rush.Tup xs -> do
       t <- (\ty -> alloca ty Nothing 0) =<< asValue (Rush.typeOf e)
       xs' <- mapM buildExpr xs
       forM_
-        (zip [0 ..] xs')
-        (\(i, x) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> pure x)
+        (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
+        (\(i, x, tx) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
       pure t
     Rush.List tx xs -> case xs of
       [] -> inttoptr (int64 0) . asPtr =<< listType tx
       x : xs -> do
-        list <- malloc =<< asValue (Rush.TList tx)
+        list <- malloc (Rush.TList tx)
         head <- gep list [int32 0, int32 0]
         tail <- gep list [int32 0, int32 1]
-        store head 0 =<< mkVal =<< buildExpr x
-        store tail 0 =<< buildExpr (Rush.List tx xs)
+        store head 0 =<< mkVal tx =<< buildExpr x
+        store tail 0 =<< mkRef =<< buildExpr (Rush.List tx xs)
         pure list
     Rush.Match xs arms -> mdo
       let xs' = (\(Rush.Var x _) -> x) <$> xs
-      matchBlock <- block
-      tried <- buildMatchArms returnBlock matchBlock xs' [] arms
+      block
+      tried <- buildMatchArms returnBlock xs' [] arms
       returnBlock <- block `named` "return"
       phi tried
     Rush.App ty f x -> do
       f' <- buildExpr f
       x' <- mkArg (Rush.typeOf x) =<< buildExpr x
       case Rush.typeOf f of
+        Rush.TFn tu@(Rush.TUnion tcs) _ _ -> mdo
+          union <- buildExpr f
+          disc' <- deref =<< gep union [int32 0, int32 0]
+          closureStorage <- gep union [int32 0, int32 1]
+          arg <- mkArg (Rush.typeOf x) =<< buildExpr x
+          br matchBlock
+          let arms = zip (int64 <$> [0 ..]) (Map.toList tcs)
+          matchBlock <- block
+          tried <- callUnionClosure returnBlock closureStorage disc' arg [] arms
+          returnBlock <- block `named` "return"
+          phi tried
         tc@(Rush.TClosure f' _ _) -> do
           c' <- mkArg tc =<< buildExpr f
-          flip call [(c', []), (x', [])] =<< lookup f'
-        Rush.TFn tc tx tb -> flip call [(x', [])] =<< buildExpr f
-        _ -> error "unreachable"
+          flip call [(c', []), (x', [])] =<< mkRef =<< lookup f'
+        Rush.TFn Rush.TUnit tx tb -> flip call [(x', [])] =<< mkRef =<< buildExpr f
+        ty -> error $ "unreachable: " ++ show ty
     c@(Rush.Closure name caps _) -> do
       closureStorage <- do
         tc' <- asValue (Rush.typeOf c)
         alloca tc' Nothing 0
-      forM_ (zip [0 ..] (Map.keys caps)) $ \(i, fieldName) -> do
-        fieldVal <- lookup fieldName
+      forM_ (zip3 [0 ..] (Map.keys caps) (Rush.typeOf <$> Map.elems caps)) $ \(i, fieldName, ty) -> do
+        fieldVal <- mkVal ty =<< lookup fieldName
         fieldPtr <- gep closureStorage [int32 0, int32 i]
         store fieldPtr 0 fieldVal
       pure closureStorage
-    e -> error "unreachable"
+    u@(Rush.Union tcs disc val) -> do
+      unionStorage <- do
+        tc' <- asValue (Rush.typeOf u)
+        alloca tc' Nothing 0
+      disc' <- gep unionStorage [int32 0, int32 0]
+      closure <-
+        join
+          ( bitcast
+              <$> gep unionStorage [int32 0, int32 1]
+              <*> (asPtr <$> asField (Rush.typeOf val))
+          )
+      store disc' 0 $ fromJust $ Map.lookup disc (Map.fromList (zip (Map.keys tcs) (int32 <$> [0 ..])))
+      store closure 0 =<< mkVal (Rush.typeOf val) =<< buildExpr val
+      pure unionStorage
+    e -> error $ "unreachable: " ++ show e
 
 buildMatchArms ::
   (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
-  Name ->
   Name ->
   [Text] ->
   [(Operand, Name)] ->
   [([Pattern.Pattern Rush.Type], Rush.Expr Rush.Type)] ->
   m [(Operand, Name)]
-buildMatchArms _ thisBlock _ tried [] = do
+buildMatchArms _ _ tried [] = do
   panic
   return tried
-buildMatchArms returnBlock thisBlock xs tried ((ps, b) : arms) = mdo
-  thisBranch <- buildMatchArm returnBlock thisBlock nextBlock xs ps b
+buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
+  thisBranch <- buildMatchArm returnBlock nextBlock xs ps b
   nextBlock <- block
-  buildMatchArms returnBlock nextBlock xs (thisBranch : tried) arms
+  buildMatchArms returnBlock xs (thisBranch : tried) arms
   where
-    buildMatchArm returnBlock thisBlock _ [] [] e = do
+    buildMatchArm returnBlock _ [] [] e = do
       result <- buildExpr e
       br returnBlock
-      return (result, thisBlock)
-    buildMatchArm returnBlock thisBlock nextBlock (x : xs) (p : ps) e = case p of
+      (result,) <$> currentBlock
+    buildMatchArm returnBlock nextBlock (x : xs) (p : ps) e = case p of
       Binding x' _ -> do
         x'' <- lookup x
-        with [(x', x'')] $ buildMatchArm returnBlock thisBlock nextBlock xs ps e
+        with [(x', x'')] $ buildMatchArm returnBlock nextBlock xs ps e
       Num n _ -> mdo
         let n' = parseInt n
         x' <- lookup x
         matches <- icmp EQ x' n'
         condBr matches continueBlock nextBlock
         continueBlock <- block
-        buildMatchArm returnBlock continueBlock nextBlock xs ps e
+        buildMatchArm returnBlock nextBlock xs ps e
       Tup ps' -> case ps' of
-        [] -> buildMatchArm returnBlock thisBlock nextBlock xs ps e
+        [] -> buildMatchArm returnBlock nextBlock xs ps e
         ps' -> do
-          x' <- lookup x
+          x' <- mkRef =<< lookup x
           xs' <- mapM (const fresh) ps'
           xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] ps')
-          with (zip xs' xs'') $ buildMatchArm returnBlock thisBlock nextBlock (xs' ++ xs) (ps' ++ ps) e
+          with (zip xs' xs'') $ buildMatchArm returnBlock nextBlock (xs' ++ xs) (ps' ++ ps) e
       List tx ps' -> case ps' of
-        [] -> buildMatchArm returnBlock thisBlock nextBlock xs ps e
+        [] -> buildMatchArm returnBlock nextBlock xs ps e
         hp : tps -> do
           --buildMatchArm returnBlock thisBlock nextBlock xs ps e
           node <- mkRef =<< lookup x
@@ -177,33 +213,72 @@ buildMatchArms returnBlock thisBlock xs tried ((ps, b) : arms) = mdo
           t' <- gep node [int32 0, int32 1]
           let tps' = List tx tps
           with [(h, h'), (t, t')] $
-            buildMatchArm returnBlock thisBlock nextBlock (h : t : xs) (hp : tps' : ps) e
-    buildMatchArm _ _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
+            buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tps' : ps) e
+    buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
+
+callUnionClosure ::
+  (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
+  Name ->
+  Operand ->
+  Operand ->
+  Operand ->
+  [(Operand, Name)] ->
+  [(Operand, (Text, Rush.Type))] ->
+  m [(Operand, Name)]
+callUnionClosure returnBlock storage disc arg tried (arm : arms) = mdo
+  thisBranch <- buildMatchArm returnBlock nextBlock storage disc arg arm
+  nextBlock <- block
+  callUnionClosure returnBlock storage disc arg (thisBranch : tried) arms
+  where
+    buildMatchArm returnBlock nextBlock storage disc arg (i, (f, ty)) = mdo
+      matches <- icmp EQ disc i
+      condBr matches callBlock nextBlock
+      callBlock <- block
+      closure <- join (bitcast <$> gep storage [int32 0, int32 0] <*> (asPtr <$> asField ty))
+      result <- flip call [(closure, []), (arg, [])] =<< mkRef =<< lookup f
+      br returnBlock
+      return (result, callBlock)
+callUnionClosure _ _ _ _ tried [] = do
+  panic
+  return tried
 
 listType :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 listType tx = do
-  let ty = Rush.withSpan emptySpan $ Rush.TList tx
   state <- get
-  case Map.lookup ty (types state) of
-    Just ty' -> pure ty'
-    Nothing -> do
-      let name = fromString $ "List " ++ show tx
-      tx' <- asValue tx
-      ty' <- typedef name $ Just $ StructureType False [tx', asPtr (NamedTypeReference name)]
-      put state {types = Map.insert ty ty' (types state)}
-      pure ty'
+  name <- fromText . ("List " <>) . toStrict . ppll <$> asValue ty
+  tx' <- asValue tx
+  ty' <-
+    if not $ name `Set.member` types state
+      then typedef name $ Just $ StructureType False [tx', asPtr (NamedTypeReference name)]
+      else pure $ NamedTypeReference name
+  put state {types = Set.insert name (types state)}
+  pure ty'
+  where
+    ty = Rush.withSpan emptySpan $ case tx of
+      Rush.TFn tc _ _ -> tc
+      _ -> tx
 
 asValue :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
-asValue = \case
+asValue ty@Rush.TList {} = asPtr <$> asStorage ty
+asValue ty = asStorage ty
+
+asStorage :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
+asStorage = \case
   Rush.TInt _ -> pure i64
   Rush.TTup tys -> StructureType False <$> mapM asValue tys
   Rush.TList tx -> listType tx
   Rush.TVar {} -> error "unreachable: asValue TVar"
-  Rush.TStruct fields -> StructureType False <$> mapM asValue (Map.elems fields)
-  Rush.TClosure _ caps _ -> StructureType False <$> mapM asValue (Map.elems caps)
-  Rush.TFn c@Rush.TClosure {} a b -> asPtr <$> (FunctionType <$> asValue b <*> mapM asArg [c, a] <*> pure False)
-  Rush.TFn Rush.TUnit a b -> asPtr <$> (FunctionType <$> asValue b <*> mapM asArg [a] <*> pure False)
-  _ -> error "unreachable"
+  Rush.TStruct fields -> StructureType False <$> mapM asField (Map.elems fields)
+  Rush.TClosure _ caps _ -> StructureType False <$> mapM asField (Map.elems caps)
+  Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType 8 i64]
+  Rush.TFn c@Rush.TUnion {} a b -> asValue c
+  Rush.TFn c@Rush.TStruct {} a b -> asValue c
+  ty -> error $ "unreachable: " ++ show ty
+
+asField :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
+asField = \case
+  Rush.TList tx -> asPtr <$> listType tx
+  ty -> asValue ty
 
 asArg :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 asArg ty
@@ -211,23 +286,28 @@ asArg ty
   | otherwise = flip PointerType (AddrSpace 0) <$> asValue ty
 
 asPtr :: Type -> Type
-asPtr = flip PointerType (AddrSpace 0)
+asPtr ty = PointerType ty (AddrSpace 0)
 
 mkArg :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
 mkArg ty
-  | passedByValue ty = mkVal
+  | passedByValue ty = mkVal ty
   | otherwise = mkRef
 
-mkVal :: MonadIRBuilder m => Operand -> m Operand
-mkVal op = case typeOf op of
+mkVal :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
+mkVal Rush.TList {} op = mkRef op
+mkVal ty op = case typeOf op of
   PointerType {} -> deref op
   _ -> pure op
+
+mkRet :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
+mkRet = mkVal
 
 mkRef :: (MonadIRBuilder m) => Operand -> m Operand
 mkRef op = case typeOf op of
   PointerType PointerType {} _ -> mkRef =<< deref op
   PointerType {} -> pure op
   _ -> do
+    -- XXX
     ref <- alloca (typeOf op) Nothing 0
     store ref 0 op
     pure ref
@@ -269,8 +349,21 @@ lookup name =
     closure <- asks closure
     captureIndex <- asks ((fmap toEnum . elemIndex name) . captures)
     capture <- mapM (\(c, i) -> flip load 0 =<< gep c [int32 0, int32 i]) $ (,) <$> closure <*> captureIndex
-    --return $ (local <|> capture <|> global) & fromMaybe (error $ "undefined: " <> unpack name)
-    return $ (local <|> capture <|> global) & fromMaybe (int64 666)
+    return $ (local <|> capture <|> global) & fromMaybe (error $ "undefined: " <> unpack name)
+
+declare :: (MonadState BuildState m, MonadModuleBuilder m) => Text -> Rush.Type -> m ()
+declare name (Rush.TFn tc tx tb) = do
+  ty <- asPtr <$> (FunctionType <$> asValue tb <*> txs <*> pure False)
+  let decl = ConstantOperand (GlobalReference ty (fromText name))
+  state <- get
+  put (state {globals = Map.insert name decl (globals state)})
+  where
+    txs = mapM asArg $ case tc of
+      c@Rush.TUnion {} -> [tc, tx]
+      c@Rush.TStruct {} -> [tc, tx]
+      Rush.TUnit -> [tx]
+      _ -> error "unreachable"
+declare _ _ = pure ()
 
 define :: (MonadState BuildState m) => Text -> m Operand -> m Operand
 define name op = do
@@ -305,11 +398,13 @@ withMalloc build = do
 
 malloc ::
   (MonadIRBuilder m, MonadReader Locals m, MonadState BuildState m, MonadModuleBuilder m) =>
-  Type ->
+  Rush.Type ->
   m Operand
-malloc ty =
-  flip bitcast (asPtr ty)
-    =<< uncurry call
-    =<< (,)
-      <$> lookup "malloc"
-      <*> ((: []) . (,[]) <$> sext (ConstantOperand (sizeof ty)) i64)
+malloc ty = do
+  ty' <- asStorage ty
+  ptr <-
+    uncurry call
+      =<< (,)
+        <$> lookup "malloc"
+        <*> ((: []) . (,[]) <$> sext (ConstantOperand (sizeof ty')) i64)
+  bitcast ptr (asPtr ty')

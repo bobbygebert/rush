@@ -13,7 +13,7 @@ import Data.Text
 import Data.Text.Lazy (toStrict)
 import Eval
 import Generate
-import Infer (Context (Context, locals), TypeError)
+import Infer (Context (Context, defs), TypeError)
 import Item
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
@@ -41,7 +41,7 @@ reduce = reduce' emptyContext
       (Item name ty value) : is -> Named name c : reduce' ctx' is
         where
           c = eval ctx value
-          ctx' = Context (Map.insert name c (locals ctx))
+          ctx' = Context (Map.insert name c (defs ctx))
 
 inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
 inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' emptyContext
@@ -50,11 +50,11 @@ inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' emptyConte
     inferAndCheck' _ [] = []
     inferAndCheck' context (item : items) = case typeItem context item of
       Right item' ->
-        let context' = Context (Map.insert (name item) (ty item') (locals context))
+        let context' = Context (Map.insert (name item) (ty item') (defs context))
          in Right item' : inferAndCheck' context' items
       err -> err : inferAndCheck' context items
 
-emptyContext = Context {locals = Map.empty}
+emptyContext = Context {defs = Map.empty}
 
 parse :: String -> Text -> Either [Text] [Ast Span]
 parse path source = first (: []) (parseModule path source)

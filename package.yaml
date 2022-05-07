@@ -33,6 +33,7 @@ library:
   - megaparsec
   - mtl
   - parser-combinators
+  - pretty
   - text
 
 executables:

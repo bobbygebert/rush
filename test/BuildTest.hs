@@ -217,3 +217,16 @@ spec = describe "rush build" $ do
       decl ["int64_t f(int64_t);"]
     o <- evalInt r d "f(2)"
     o `shouldBe` "3"
+
+  it "builds closure sums" $ do
+    r <-
+      rush
+        [ "suml [x, y] z = x + y + z",
+          "sump (x, y) z = x + y + z",
+          "h [g, f] = (g 1) + (f 2)",
+          "i x = h [sump (x, x + 1), suml [x + 2, x + 3]]"
+        ]
+    d <-
+      decl ["int64_t i(int64_t);"]
+    o <- evalInt r d "i(1)"
+    o `shouldBe` "13"
