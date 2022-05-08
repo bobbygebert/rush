@@ -15,7 +15,6 @@ import qualified Data.List as List hiding (lookup)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, null, unlines, zip)
-import Debug.Trace
 import Expression
 import GHC.RTS.Flags (ProfFlags (descrSelector))
 import Infer hiding (Type)
@@ -52,7 +51,7 @@ typeItem context (Item n s e) = normalize <$> (solve =<< infer)
       e' <- with [(n, ty)] $ typeExpr e
       ensure (ty :~ typeOf e')
       return $ Item n ty e'
-    solve (item, cs) = (\ss@(Substitutions ss') -> trace (unlines $ show item : (show <$> Map.toList ss')) (apply ss item)) <$> trace (unlines $ show item : (show <$> cs)) solveConstraints cs
+    solve (item, cs) = flip apply item <$> solveConstraints cs
     normalize item@(Item _ ty _) = apply (Substitutions ss) item
       where
         tvs = Set.toList (freeTypeVars ty)
@@ -65,6 +64,9 @@ typeExpr = \case
   List c xs -> do
     ty <- fresh c
     List ty <$> mapM (`constrained` (ty :~)) xs
+  Cons h t -> do
+    h' <- typeExpr h
+    Cons h' <$> constrained t (:~ TList (typeOf h'))
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> Add <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
   -- TODO: unify tarms
@@ -100,6 +102,7 @@ typeOf = \case
   Num _ ty -> ty
   Tup xs -> TTup $ typeOf <$> xs
   List ty _ -> TList ty
+  Cons h _ -> TList (typeOf h)
   Var _ ty -> ty
   Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
@@ -113,6 +116,7 @@ typeOfP = \case
   Pattern.Num _ ty -> ty
   Pattern.Tup pats -> TTup $ typeOfP <$> pats
   Pattern.List ty _ -> TList ty
+  Pattern.Cons h _ -> TList (typeOfP h)
 
 bindings :: Pattern.Pattern Type -> [(Text, Type)]
 bindings = \case
@@ -120,6 +124,7 @@ bindings = \case
   Pattern.Num _ _ -> []
   Pattern.Tup ps -> bindings =<< ps
   Pattern.List _ ps -> bindings =<< ps
+  Pattern.Cons h t -> bindings h ++ bindings t
 
 typePattern :: Pattern.Pattern Span -> Infer Type (Pattern.Pattern Type)
 typePattern = \case
@@ -133,6 +138,7 @@ typePattern = \case
       ensure $ ty :~ typeOfP p'
       pure p'
     pure $ Pattern.List ty ps'
+  Pattern.Cons h t -> Pattern.Cons <$> typePattern h <*> typePattern t
 
 freshTypeVars :: [Span -> Type]
 freshTypeVars = TVar . pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])

@@ -10,6 +10,7 @@ data Pattern c
   | Num Text c
   | Tup [Pattern c]
   | List c [Pattern c]
+  | Cons (Pattern c) (Pattern c)
   deriving (Show, Eq, Foldable, Functor)
 
 instance Traversable Pattern where
@@ -17,3 +18,4 @@ instance Traversable Pattern where
   traverse f (Num n c) = Num n <$> f c
   traverse f (Tup ps) = Tup <$> traverse (traverse f) ps
   traverse f (List c ps) = List <$> f c <*> traverse (traverse f) ps
+  traverse f (Cons h t) = Cons <$> traverse f h <*> traverse f t

@@ -6,13 +6,14 @@
 module Expression (Expr (..)) where
 
 import Data.List (intercalate)
-import Data.Text hiding (intercalate, unwords)
+import Data.Text hiding (foldr, intercalate, unwords)
 import qualified Pattern
 
 data Expr c
   = Num Text c
   | Tup [Expr c]
   | List c [Expr c]
+  | Cons (Expr c) (Expr c)
   | Var Text c
   | Add (Expr c) (Expr c)
   | Match [Expr c] [([Pattern.Pattern c], Expr c)]
@@ -25,6 +26,10 @@ instance (Show t) => Show (Expr t) where
     Num n _ -> unpack n
     Tup xs -> "(" ++ intercalate ", " (show <$> xs) ++ ")"
     List _ xs -> "[" ++ intercalate ", " (show <$> xs) ++ "]"
+    Cons h t -> "(" ++ foldr (\x -> (++ (" :: " ++ show x))) (show h) (nodes t) ++ ")"
+      where
+        nodes (Cons x xs) = x : nodes xs
+        nodes x = [x]
     Var v ty -> "(" ++ unpack v ++ ": " ++ show ty ++ ")"
     Add a b -> "(" ++ show a ++ " + " ++ show b ++ ")"
     Match xs ps ->
@@ -40,6 +45,7 @@ instance Traversable Expr where
   traverse f (Num n c) = Num n <$> f c
   traverse f (Tup xs) = Tup <$> traverse (traverse f) xs
   traverse f (List c xs) = List <$> f c <*> traverse (traverse f) xs
+  traverse f (Cons h t) = Cons <$> traverse f h <*> traverse f t
   traverse f (Var v c) = Var v <$> f c
   traverse f (Add a b) = Add <$> traverse f a <*> traverse f b
   traverse f (Match x b) =

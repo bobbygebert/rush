@@ -218,6 +218,20 @@ spec = describe "rush build" $ do
     o <- evalInt r d "f(2)"
     o `shouldBe` "3"
 
+  it "builds cons" $ do
+    r <-
+      rush
+        [ "list 3 = []",
+          "list x = x :: list (x + 1)",
+          "sum [] = 0",
+          "sum (x :: xs) = x + (sum xs)",
+          "f x = sum (list x)"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(0)"
+    o `shouldBe` "3"
+
   it "builds closure sums" $ do
     r <-
       rush

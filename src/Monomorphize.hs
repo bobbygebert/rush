@@ -105,7 +105,7 @@ generate cs =
     generate' (IR.Named name c) =
       IR.Named name <$> case c of
         IR.CNum {} -> pure c
-        IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.singleton x) b
+        IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
     types = Map.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
     (templates, targets) =
@@ -125,6 +125,7 @@ monomorphize locals e = case e of
   Unit -> pure e
   Tup xs -> Tup <$> mapM (monomorphize locals) xs
   List ty xs -> List ty <$> mapM (monomorphize locals) xs
+  Cons h t -> Cons <$> monomorphize locals h <*> monomorphize locals t
   Var v ty -> extract v ty locals e
   Add a b -> Add <$> monomorphize locals a <*> monomorphize locals b
   Match xs as -> Match <$> mapM (monomorphize locals) xs <*> mapM match as
@@ -189,7 +190,7 @@ closeOverConstant (Rush.Named name c) = ty'
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
       Rush.CLambda (x, tx) b -> do
-        tf <- init (Rush.typeOf $ Rush.unConst c)
+        tf <- TFn TUnit <$> init tx <*> init (Rush.typeOf b)
         let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
         b' <- with [(name, tf), (x, tx)] $ closeOverExpr name b
         return $ IR.CFn TUnit (x, tx) b'
@@ -220,6 +221,7 @@ closeOverExpr parent e = case e of
         TClosure f _ _ -> (f, x)
         _ -> error "unreachable"
       unions closures xs' = uncurry (Union closures) . discriminatedVal <$> xs'
+  Rush.Cons h t -> Cons <$> closeOverExpr parent h <*> closeOverExpr parent t
   Rush.Var x ty -> Var x <$> lookup x
   Rush.Add a b -> Add <$> closeOverExpr parent a <*> closeOverExpr parent b
   Rush.Match xs as -> do
@@ -243,6 +245,7 @@ closeOverExpr parent e = case e of
           ty' <- init ty
           mapM_ (ensure . (ty' :~) . typeOfP) xs'
           pure $ Pattern.List ty' xs'
+        Pattern.Cons h t -> Pattern.Cons <$> closeOverPattern h <*> closeOverPattern t
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent
     tx' <- init tx
@@ -285,6 +288,7 @@ captures bound =
         Rush.Add a b -> Map.union <$> captures bound a <*> captures bound b
         Rush.Tup xs -> unionMany <$> mapM (captures bound) xs
         Rush.List _ xs -> unionMany <$> mapM (captures bound) xs
+        Rush.Cons h t -> Map.union <$> captures bound h <*> captures bound t
         Rush.Match xs ps -> Map.union <$> bxs <*> bps
           where
             bxs = unionMany <$> mapM (captures bound) xs
@@ -302,6 +306,7 @@ typedBindings = \case
   Pattern.Num _ _ -> []
   Pattern.Tup ps -> typedBindings =<< ps
   Pattern.List _ ps -> typedBindings =<< ps
+  Pattern.Cons h t -> typedBindings h ++ typedBindings t
 
 freshName :: Build Text
 freshName = do

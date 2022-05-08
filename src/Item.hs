@@ -30,6 +30,7 @@ desugarFnArms (arm@(ps, _) : arms) = close args
       Pattern.Num _ c' -> c'
       Pattern.Tup ps -> getC $ head ps
       Pattern.List c' _ -> c'
+      Pattern.Cons h _ -> getC h
 desugarFnArms _ = error "unreachable"
 
 freshNames :: [Text]

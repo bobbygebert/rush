@@ -108,12 +108,19 @@ buildExpr e =
     Rush.List tx xs -> case xs of
       [] -> inttoptr (int64 0) . asPtr =<< listType tx
       x : xs -> do
-        list <- malloc (Rush.TList tx)
+        list <- malloc (Rush.typeOf e)
         head <- gep list [int32 0, int32 0]
         tail <- gep list [int32 0, int32 1]
         store head 0 =<< mkVal tx =<< buildExpr x
         store tail 0 =<< mkRef =<< buildExpr (Rush.List tx xs)
         pure list
+    Rush.Cons h t -> do
+      list <- malloc (Rush.typeOf e)
+      head <- gep list [int32 0, int32 0]
+      tail <- gep list [int32 0, int32 1]
+      store head 0 =<< mkVal (Rush.typeOf h) =<< buildExpr h
+      store tail 0 =<< mkRef =<< buildExpr t
+      pure list
     Rush.Match xs arms -> mdo
       let xs' = (\(Rush.Var x _) -> x) <$> xs
       block
@@ -203,9 +210,13 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
           xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] ps')
           with (zip xs' xs'') $ buildMatchArm returnBlock nextBlock (xs' ++ xs) (ps' ++ ps) e
       List tx ps' -> case ps' of
-        [] -> buildMatchArm returnBlock nextBlock xs ps e
+        [] -> mdo
+          node <- flip ptrtoint i64 =<< mkRef =<< lookup x
+          matches <- icmp EQ node (int64 0)
+          condBr matches continueBlock nextBlock
+          continueBlock <- block
+          buildMatchArm returnBlock nextBlock xs ps e
         hp : tps -> do
-          --buildMatchArm returnBlock thisBlock nextBlock xs ps e
           node <- mkRef =<< lookup x
           h <- fresh
           h' <- gep node [int32 0, int32 0]
@@ -214,6 +225,14 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
           let tps' = List tx tps
           with [(h, h'), (t, t')] $
             buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tps' : ps) e
+      Cons hp tp -> do
+        node <- mkRef =<< lookup x
+        h <- fresh
+        h' <- gep node [int32 0, int32 0]
+        t <- fresh
+        t' <- gep node [int32 0, int32 1]
+        with [(h, h'), (t, t')] $
+          buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
 callUnionClosure ::

@@ -27,7 +27,6 @@ build path source =
   toStrict
     . ppllvm
     . buildModule (takeBaseName path)
-    -- . (error . show)
     . ir
     . reduce
     <$> (inferAndCheck . fmap desugar =<< parse path source)

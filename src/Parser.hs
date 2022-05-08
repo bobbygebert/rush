@@ -63,7 +63,7 @@ pats :: Parser [Pattern.Pattern Span]
 pats = (:) <$> pat <*> many (try (hspace *> pat))
 
 pat :: Parser (Pattern.Pattern Span)
-pat = binding <|> numPat <|> listPat <|> tuplePat
+pat = binding <|> numPat <|> listPat <|> try (parens consPat) <|> tuplePat
 
 binding :: Parser (Pattern.Pattern Span)
 binding = uncurry Pattern.Binding <$> spanned lowerIdent
@@ -82,6 +82,12 @@ tuple = Tup <$> parens ((:) <$> (expr <* sep) <*> (expr `sepBy1` sep))
 listPat :: Parser (Pattern.Pattern Span)
 listPat = listLiteralPat
 
+consPat :: Parser (Pattern.Pattern Span)
+consPat =
+  Pattern.Cons
+    <$> ((pat <* hspace) <* (string "::" <* hspace))
+    <*> (listLiteralPat <|> try consPat <|> pat)
+
 listLiteralPat :: Parser (Pattern.Pattern Span)
 listLiteralPat = uncurry (flip Pattern.List) <$> spanned (brackets (pat `sepBy` (char ',' *> hspace)))
 
@@ -99,17 +105,20 @@ expr :: Parser (Expr Span)
 expr =
   makeExprParser
     term
-    [ [binary "+" Add]
+    [ [l "+" Add],
+      [r "::" Cons]
     ]
   where
-    binary :: Text -> (Expr Span -> Expr Span -> Expr Span) -> Operator Parser (Expr Span)
-    binary s e = InfixL (e <$ (hspace *> string s <* hspace))
-
-term :: Parser (Expr Span)
-term = choice [try app, atom]
+    l :: Text -> (Expr Span -> Expr Span -> Expr Span) -> Operator Parser (Expr Span)
+    l s e = InfixL $ try (e <$ (hspace *> string s <* hspace))
+    r :: Text -> (Expr Span -> Expr Span -> Expr Span) -> Operator Parser (Expr Span)
+    r s e = InfixR $ try (e <$ (hspace *> string s <* hspace))
 
 atom :: Parser (Expr Span)
 atom = num <|> var <|> listLiteral <|> try tuple <|> parens expr
+
+term :: Parser (Expr Span)
+term = try app <|> atom
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
@@ -232,6 +241,19 @@ patSpec = do
       as
       (Pattern.Tup [Pattern.Binding "x" (), Pattern.Binding "y" (), Pattern.Binding "z" ()])
 
+  pat <* eof
+    & parses
+      "cons pattern"
+      "(x :: y :: [])"
+      as
+      ( Pattern.Cons
+          (Pattern.Binding "x" ())
+          ( Pattern.Cons
+              (Pattern.Binding "y" ())
+              (Pattern.List () [])
+          )
+      )
+
 constantSpec = do
   item <* eof
     & parses
@@ -261,6 +283,12 @@ listSpec = do
       "[1, 2]"
       as
       (List () [Num "1" (), Num "2" ()])
+  expr <* eof
+    & parses
+      "cons list"
+      "1 :: 2 :: []"
+      as
+      (Cons (Num "1" ()) (Cons (Num "2" ()) (List () [])))
 
 lowerIdentSpec =
   Hspec.it
