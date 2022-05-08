@@ -19,6 +19,7 @@ import qualified Data.Set as Set
 import Data.String
 import Data.Text hiding (filter, foldr, head, length, null, tail, unlines, zip)
 import Data.Text.Lazy (toStrict)
+import Debug.Trace
 import qualified IR as Rush
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
@@ -28,7 +29,7 @@ import LLVM.AST.Constant hiding (Add, ICmp, type')
 import LLVM.AST.Global (Global (Function, GlobalVariable, addrSpace, alignment, basicBlocks, callingConvention, comdat, dllStorageClass, functionAttributes, garbageCollectorName, initializer, isConstant, linkage, metadata, name, parameters, personalityFunction, prefix, returnAttributes, section, threadLocalMode, type', unnamedAddr, visibility))
 import LLVM.AST.IntegerPredicate
 import LLVM.AST.Linkage
-import LLVM.AST.Type
+import LLVM.AST.Type hiding (void)
 import LLVM.AST.Typed (Typed (typeOf))
 import LLVM.AST.Visibility
 import LLVM.IRBuilder hiding (buildModule, fresh)
@@ -63,27 +64,29 @@ declareItem :: Rush.Named Rush.Type -> Build (Rush.Named Rush.Type)
 declareItem item@(Rush.Named name constant) =
   item <$ declare name (Rush.typeOf (Rush.unConst constant))
 
-buildItem :: Rush.Named Rush.Type -> Build Operand
+buildItem :: Rush.Named Rush.Type -> Build ()
 buildItem item@(Rush.Named name constant) =
-  case constant of
-    Rush.CNum n ty -> do
-      define name
-        =<< global (fromText name)
-        <$> asValue ty
-        <*> pure (parseIntConst n)
-    Rush.CFn tc@(Rush.TStruct caps) (x, tx) b -> do
-      define name
-        =<< function (fromText name)
-        <$> (zip <$> mapM asArg [tc, tx] <*> pure (fromText <$> ["closure", x]))
-        <*> asValue (Rush.typeOf b)
-        <*> pure (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< mkRet (Rush.typeOf b) =<< buildExpr b))
-    Rush.CFn Rush.TUnit (x, tx) b -> do
-      define name
-        =<< function (fromText name)
-        <$> (asArg tx <&> (: []) . (,fromText x))
-        <*> asValue (Rush.typeOf b)
-        <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkRet (Rush.typeOf b) =<< buildExpr b)
-    e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
+  trace ("building: " ++ show item) $
+    case constant of
+      Rush.CNum n ty ->
+        define name
+          =<< global (fromText name)
+          <$> asValue ty
+          <*> pure (parseIntConst n)
+      Rush.CFn tc@(Rush.TStruct caps) (x, tx) b ->
+        define name
+          =<< function (fromText name)
+          <$> (zip <$> mapM asArg [tc, tx] <*> pure (fromText <$> ["closure", x]))
+          <*> asValue (Rush.typeOf b)
+          <*> pure (\[c', x'] -> bind caps c' $ with [(x, x')] (ret =<< mkRet (Rush.typeOf b) =<< buildExpr b))
+      Rush.CFn Rush.TUnit (x, tx) b ->
+        define name
+          =<< function (fromText name)
+          <$> (asArg tx <&> (: []) . (,fromText x))
+          <*> asValue (Rush.typeOf b)
+          <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkRet (Rush.typeOf b) =<< buildExpr b)
+      Rush.CType (n, k) (c, ty) -> pure ()
+      e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 buildExpr ::
   (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
@@ -100,7 +103,6 @@ buildExpr e = do
     Rush.Mul a b -> buildBinOp mul a b
     Rush.Div a b -> buildBinOp udiv a b
     Rush.Mod a b -> buildBinOp urem a b
-    --Rush.Mod a b -> buildBinOp add a b
     Rush.Tup xs -> do
       t <- (\ty -> alloca ty Nothing 0) =<< asValue (Rush.typeOf e)
       xs' <- mapM buildExpr xs
@@ -173,6 +175,7 @@ buildExpr e = do
       store disc' 0 $ fromJust $ Map.lookup disc (Map.fromList (zip (Map.keys tcs) (int32 <$> [0 ..])))
       store closure 0 =<< mkVal (Rush.typeOf val) =<< buildExpr val
       pure unionStorage
+    Rush.Data (c, ty) -> pure $ struct Nothing False []
     e -> error $ "unreachable: " ++ show e
 
 buildMatchArms ::
@@ -236,6 +239,7 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
         t' <- gep node [int32 0, int32 1]
         with [(h, h'), (t, t')] $
           buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
+      Data {} -> buildMatchArm returnBlock nextBlock xs ps e
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
 callUnionClosure ::
@@ -295,6 +299,7 @@ asStorage = \case
   Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType 8 i64]
   Rush.TFn c@Rush.TUnion {} a b -> asValue c
   Rush.TFn c@Rush.TStruct {} a b -> asValue c
+  Rush.TData (_, _) -> pure $ StructureType False []
   ty -> error $ "unreachable: " ++ show ty
 
 asField :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
@@ -387,12 +392,11 @@ declare name (Rush.TFn tc tx tb) = do
       _ -> error "unreachable"
 declare _ _ = pure ()
 
-define :: (MonadState BuildState m) => Text -> m Operand -> m Operand
+define :: (MonadState BuildState m) => Text -> m Operand -> m ()
 define name op = do
   op <- op
   state <- get
   put (state {globals = Map.insert name op (globals state)})
-  pure op
 
 freshNames :: [Text]
 freshNames = pack . ("__" ++) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])

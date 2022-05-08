@@ -105,6 +105,7 @@ generate cs =
     generate' (IR.Named name c) =
       IR.Named name <$> case c of
         IR.CNum {} -> pure c
+        IR.CType {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
     types = Map.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
@@ -141,6 +142,8 @@ monomorphize locals e = case e of
   Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
   Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
+  Data (c, ty) -> pure $ Data (c, ty)
+  EType (n, k) (c, ty) -> pure $ EType (n, k) (c, ty)
 
 monomorphizeBinOp locals op a b = op <$> monomorphize locals a <*> monomorphize locals b
 
@@ -183,11 +186,13 @@ init = \case
   Rush.TTup tys -> TTup <$> mapM init tys
   Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v s
+  Rush.TData (c, s) -> pure $ TData (c, s)
   a Rush.:-> b -> do
     ta <- init a
     tb <- init b
     tc <- freshVar (spanOf ta)
     TFn tc <$> init a <*> init b
+  Rush.Kind s -> pure Kind
 
 closeOverConstant :: Rush.Named Rush.Type -> Build Type
 closeOverConstant (Rush.Named name c) = ty'
@@ -195,6 +200,7 @@ closeOverConstant (Rush.Named name c) = ty'
     ty' = (typeOf <$>) . define name =<< c'
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
+      Rush.CType (n, kind) (c, ty) -> IR.CType <$> ((n,) <$> init kind) <*> ((c,) <$> init ty)
       Rush.CLambda (x, tx) b -> do
         tf <- TFn TUnit <$> init tx <*> init (Rush.typeOf b)
         let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
@@ -256,6 +262,7 @@ closeOverExpr parent e = case e of
           mapM_ (ensure . (ty' :~) . typeOfP) xs'
           pure $ Pattern.List ty' xs'
         Pattern.Cons h t -> Pattern.Cons <$> closeOverPattern h <*> closeOverPattern t
+        Pattern.Data (n, ty) -> Pattern.Data . (n,) <$> init ty
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent
     tx' <- init tx
@@ -281,6 +288,8 @@ closeOverExpr parent e = case e of
     ensure $ typeOf x' :~ tx'
     ensure . (ty' :~) =<< init ty
     return $ App ty' f' x'
+  Rush.Data (c, ty) -> Data . (c,) <$> init ty
+  Rush.Type (n, k) (c, ty) -> EType <$> ((n,) <$> init k) <*> ((c,) <$> init ty)
 
 captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))
 captures bound =
@@ -303,6 +312,7 @@ captures bound =
         Rush.Tup xs -> unionMany <$> mapM (captures bound) xs
         Rush.List _ xs -> unionMany <$> mapM (captures bound) xs
         Rush.Cons h t -> Map.union <$> captures bound h <*> captures bound t
+        Rush.Data (_, _) -> pure Map.empty
         Rush.Match xs ps -> Map.union <$> bxs <*> bps
           where
             bxs = unionMany <$> mapM (captures bound) xs
@@ -310,6 +320,7 @@ captures bound =
             excludeBindings ps =
               Map.filterWithKey
                 (curry $ not . (`Set.member` foldr (Set.union . bindings) Set.empty ps) . fst)
+        Rush.Type (_, _) (_, _) -> pure Map.empty
 
 bindings :: Pattern.Pattern b -> Set.Set Text
 bindings = Set.fromList . fmap fst . typedBindings
@@ -321,6 +332,7 @@ typedBindings = \case
   Pattern.Tup ps -> typedBindings =<< ps
   Pattern.List _ ps -> typedBindings =<< ps
   Pattern.Cons h t -> typedBindings h ++ typedBindings t
+  Pattern.Data (_, _) -> []
 
 freshName :: Build Text
 freshName = do

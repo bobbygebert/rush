@@ -21,12 +21,14 @@ import Prelude hiding ((<>))
 data Constant t
   = CNum Text t
   | CFn t (Text, t) (Expr t)
+  | CType (Text, t) (Text, t)
   deriving (Eq, Functor, Foldable)
 
 instance (Show t) => Show (Constant t) where
   show = \case
     CNum n _ -> unpack n
     CFn tc (x, tx) b -> show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
+    CType (n, _) _ -> unpack n
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -35,12 +37,14 @@ data Type
   = TInt Span
   | TTup [Type]
   | TList Type
+  | TData (Text, Span)
   | TVar Text Span
   | TStruct (Map.Map Text Type)
   | TUnion (Map.Map Text Type)
   | TClosure Text (Map.Map Text Type) Type
   | TUnit
   | TFn Type Type Type
+  | Kind
   deriving (Eq, Ord)
 
 data Expr t
@@ -55,11 +59,13 @@ data Expr t
   | Tup [Expr t]
   | List t [Expr t]
   | Cons (Expr t) (Expr t)
+  | Data (Text, t)
   | Match [Expr t] [([Pattern.Pattern t], Expr t)]
   | Fn Type (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | Union (Map.Map Text Type) Text (Expr t)
   | App t (Expr t) (Expr t)
+  | EType (Text, t) (Text, t)
   deriving (Eq, Functor, Foldable, Traversable)
 
 instance Show Type where
@@ -71,6 +77,7 @@ tdoc = \case
   TTup xs -> parens $ cat $ punctuate comma (tdoc <$> xs)
   TList tx -> brackets $ tdoc tx
   TVar v _ -> text "'" <> text (unpack v)
+  TData (n, _) -> text $ unpack n
   TStruct fields -> braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
     where
       showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
@@ -79,6 +86,7 @@ tdoc = \case
       showField (x, tx) = text (unpack x) <+> colon <+> tdoc tx
   TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
   TClosure f cs tf -> parens $ tdoc (TStruct cs) <+> text (unpack f) <> colon <+> tdoc tf
+  Kind -> "*"
 
 instance (Show t) => Show (Expr t) where
   show = renderStyle (style {lineLength = 100000}) . vdoc
@@ -99,6 +107,7 @@ vdoc = \case
     where
       cons (Cons x xs) = vdoc x <+> "::" <+> cons xs
       cons x = vdoc x
+  Data (n, _) -> text $ unpack n
   Match xs ps ->
     hang (text "match" <+> cat (vdoc <$> xs)) 2 $
       braces $
@@ -135,6 +144,8 @@ instance Template Type where
         `Set.union` freeTypeVars f
     TUnion tys -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems tys)
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
+    TData (_, _) -> Set.empty
+    Kind -> Set.empty
 
   instantiate ty = do
     let vs = Set.toList $ freeTypeVars ty
@@ -150,6 +161,8 @@ instance Template Type where
       TUnion tys -> TStruct $ Map.map (apply s) tys
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
+      TData (n, s) -> TData (n, s)
+      Kind -> Kind
 
 instance Refine Type Type where
   apply ss@(Substitutions ss') = \case
@@ -162,6 +175,8 @@ instance Refine Type Type where
     TUnion tys -> TUnion $ apply ss <$> tys
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
+    TData (n, s) -> TData (n, s)
+    Kind -> Kind
 
 instance Unify Type where
   unifyingSubstitutions a b = usubs a b
@@ -198,6 +213,7 @@ unConst :: Constant Type -> Expr Type
 unConst = \case
   CFn tc x b -> Fn tc x b
   CNum n ty -> Num n ty
+  CType (n, kind) (c, ty) -> EType (n, kind) (c, ty)
 
 typeOf :: Expr Type -> Type
 typeOf = \case
@@ -212,12 +228,14 @@ typeOf = \case
   Tup xs -> TTup $ typeOf <$> xs
   List tx _ -> TList tx
   Cons h _ -> TList (typeOf h)
+  Data (_, ty) -> ty
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
   Fn cls a b -> TFn cls (snd a) (typeOf b)
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   Union ty disc val -> TUnion ty
   App ty f x -> ty
+  EType (_, k) _ -> k
 
 typeOfP :: Pattern.Pattern Type -> Type
 typeOfP = \case
@@ -226,6 +244,7 @@ typeOfP = \case
   Pattern.Tup pats -> TTup $ typeOfP <$> pats
   Pattern.List ty _ -> TList ty
   Pattern.Cons h _ -> TList (typeOfP h)
+  Pattern.Data (_, ty) -> ty
 
 -- TODO: Merge Spans
 spanOf :: Type -> Span
@@ -239,6 +258,8 @@ spanOf = \case
   TClosure _ c tf -> spanOf tf
   TFn _ a b -> spanOf a
   TUnit -> emptySpan
+  TData (_, s) -> s
+  Kind -> emptySpan
 
 withSpan :: Span -> Type -> Type
 withSpan s = \case
@@ -251,3 +272,5 @@ withSpan s = \case
   TClosure f c tf -> TClosure f (Map.map (withSpan s) c) (withSpan s tf)
   TFn cls a b -> TFn (withSpan s cls) (withSpan s a) (withSpan s b)
   TUnit -> TUnit
+  TData (n, _) -> TData (n, s)
+  Kind -> Kind

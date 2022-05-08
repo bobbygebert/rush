@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TupleSections #-}
 
 module Pattern (Pattern (..)) where
 
@@ -11,6 +12,7 @@ data Pattern c
   | Tup [Pattern c]
   | List c [Pattern c]
   | Cons (Pattern c) (Pattern c)
+  | Data (Text, c)
   deriving (Show, Eq, Foldable, Functor)
 
 instance Traversable Pattern where
@@ -19,3 +21,4 @@ instance Traversable Pattern where
   traverse f (Tup ps) = Tup <$> traverse (traverse f) ps
   traverse f (List c ps) = List <$> f c <*> traverse (traverse f) ps
   traverse f (Cons h t) = Cons <$> traverse f h <*> traverse f t
+  traverse f (Data (t, c)) = Data . (t,) <$> f c

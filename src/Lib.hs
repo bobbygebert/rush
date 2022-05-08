@@ -4,6 +4,7 @@ module Lib (build) where
 
 import Ast
 import Control.Arrow hiding (first)
+import Control.Monad
 import Data.Bifunctor
 import Data.Either (partitionEithers)
 import Data.Function
@@ -11,13 +12,15 @@ import Data.Functor
 import qualified Data.Map as Map
 import Data.Text
 import Data.Text.Lazy (toStrict)
+import Debug.Trace
 import Eval
+import qualified Expression
 import Generate
 import Infer (Context (Context, defs), TypeError)
 import Item
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
-import Parser
+import Parser (Span, parseModule)
 import System.FilePath
 import Type
 import Prelude hiding (unlines)
@@ -29,7 +32,7 @@ build path source =
     . buildModule (takeBaseName path)
     . ir
     . reduce
-    <$> (inferAndCheck . fmap desugar =<< parse path source)
+    <$> (inferAndCheck . (desugar <$>) =<< parse path source)
 
 reduce :: [Item Type] -> [Named Type]
 reduce = reduce' emptyContext
@@ -48,9 +51,12 @@ inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' emptyConte
     inferAndCheck' :: Context Type -> [Item Span] -> [Either TypeError (Item Type)]
     inferAndCheck' _ [] = []
     inferAndCheck' context (item : items) = case typeItem context item of
-      Right item' ->
-        let context' = Context (Map.insert (name item) (ty item') (defs context))
-         in Right item' : inferAndCheck' context' items
+      Right item' -> do
+        let (name', ty') = case value item' of
+              Expression.Type (n, k) (c, ty) -> (c, ty)
+              _ -> (name item', ty item')
+        let context' = Context (Map.insert name' ty' (defs context))
+        Right item' : inferAndCheck' context' items
       err -> err : inferAndCheck' context items
 
 emptyContext = Context {defs = Map.empty}

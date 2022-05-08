@@ -250,3 +250,15 @@ spec = describe "rush build" $ do
       decl ["int64_t i(int64_t);"]
     o <- evalInt r d "i(1)"
     o `shouldBe` "13"
+
+  it "builds marker types" $ do
+    r <-
+      rush
+        [ "Marker = Marker",
+          "isMarker Marker = 1",
+          "f 1 = isMarker Marker"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(1)"
+    o `shouldBe` "1"

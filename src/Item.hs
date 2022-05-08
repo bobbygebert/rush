@@ -4,19 +4,20 @@
 
 module Item (desugar, Item (..)) where
 
-import Ast
+import qualified Ast
 import Control.Monad
 import Data.Text hiding (foldr, head, zip)
 import Expression
 import qualified Pattern
 
-data Item c = Item {name :: Text, ty :: c, value :: Expr c}
+data Item s = Item {name :: Text, ty :: s, value :: Expr s}
   deriving (Show, Eq, Foldable, Functor)
 
-desugar :: Ast c -> Item c
+desugar :: Ast.Ast s -> Item s
 desugar = \case
-  Constant (n, c) e -> Item n c e
-  Fn (n, c) arms -> Item n c (desugarFnArms arms)
+  Ast.Constant (n, s) e -> Item n s e
+  Ast.Fn (n, s) arms -> Item n s (desugarFnArms arms)
+  Ast.Type (n, s1) (c, s2) -> Item n s1 (Type (c, s2) (c, s2))
 
 desugarFnArms :: [([Pattern.Pattern c], Expr c)] -> Expr c
 desugarFnArms (arm@(ps, _) : arms) = close args
@@ -31,6 +32,7 @@ desugarFnArms (arm@(ps, _) : arms) = close args
       Pattern.Tup ps -> getC $ head ps
       Pattern.List c' _ -> c'
       Pattern.Cons h _ -> getC h
+      Pattern.Data (_, c') -> c'
 desugarFnArms _ = error "unreachable"
 
 freshNames :: [Text]

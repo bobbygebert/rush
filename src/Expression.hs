@@ -20,9 +20,11 @@ data Expr c
   | Tup [Expr c]
   | List c [Expr c]
   | Cons (Expr c) (Expr c)
+  | Data (Text, c)
   | Match [Expr c] [([Pattern.Pattern c], Expr c)]
   | Lambda (Text, c) (Expr c)
   | App c (Expr c) (Expr c)
+  | Type (Text, c) (Text, c)
   deriving (Eq, Foldable, Functor)
 
 instance (Show t) => Show (Expr t) where
@@ -40,6 +42,7 @@ instance (Show t) => Show (Expr t) where
       where
         nodes (Cons x xs) = x : nodes xs
         nodes x = [x]
+    Data (c, ty) -> show c
     Match xs ps ->
       "(match " ++ unwords (("(" ++) . (++ ")") . show <$> xs) ++ " {"
         ++ intercalate ", " (showArm <$> ps)
@@ -48,6 +51,7 @@ instance (Show t) => Show (Expr t) where
         showArm (ps, b) = unwords (("(" ++) . (++ ")") . show <$> ps) ++ " -> " ++ show b
     Lambda (x, tx) b -> "((" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b ++ ")"
     App ty f x -> "(" ++ show f ++ " " ++ show x ++ ": " ++ show ty ++ ")"
+    Type (n, _) _ -> unpack n
 
 showBinOp op a b = "(" ++ show a ++ " " ++ op ++ " " ++ show b ++ ")"
 
@@ -62,11 +66,13 @@ instance Traversable Expr where
   traverse f (Tup xs) = Tup <$> traverse (traverse f) xs
   traverse f (List c xs) = List <$> f c <*> traverse (traverse f) xs
   traverse f (Cons h t) = Cons <$> traverse f h <*> traverse f t
+  traverse f (Data (n, c)) = Data . (n,) <$> f c
   traverse f (Match x b) =
     Match
       <$> traverse (traverse f) x
       <*> traverse (\(ps, b) -> (,) <$> traverse (traverse f) ps <*> traverse f b) b
   traverse f (Lambda (x, c) b) = Lambda . (x,) <$> f c <*> traverse f b
   traverse f (App c a b) = App <$> f c <*> traverse f a <*> traverse f b
+  traverse f (Type (n, a) (c, b)) = Type <$> ((n,) <$> f a) <*> ((c,) <$> f b)
 
 traverseBinOp f op a b = op <$> traverse f a <*> traverse f b

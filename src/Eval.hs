@@ -22,6 +22,7 @@ import Prelude hiding (lookup)
 data Constant t
   = CNum Text t
   | CLambda (Text, t) (Expr t)
+  | CType (Text, t) (Text, t)
   deriving (Show, Eq, Functor, Foldable)
 
 data Named t = Named Text (Constant t)
@@ -30,6 +31,7 @@ data Named t = Named Text (Constant t)
 instance Traversable Constant where
   traverse f (CNum n ty) = CNum n <$> f ty
   traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
+  traverse f (CType (n, k) (c, t)) = CType <$> ((n,) <$> f k) <*> ((c,) <$> f t)
 
 instance Traversable Named where
   traverse f (Named n c) = Named n <$> traverse f c
@@ -61,6 +63,8 @@ eval ctx =
         App ty f x -> case eval ctx f of
           CLambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
+        Type (n, kind) (c, ty) -> CType (n, kind) (c, ty)
+        Data {} -> error "todo"
 
 match ::
   Context (Constant Type) -> [Expr Type] -> [Pattern Type] -> Expr Type -> Maybe (Constant Type)
@@ -79,6 +83,7 @@ match ctx (x : xs) (p : ps) b =
         Pattern.Tup {} -> error "todo"
         Pattern.List {} -> error "todo"
         Pattern.Cons {} -> error "todo"
+        Pattern.Data {} -> error "todo"
 match _ _ _ _ = error "unreachable"
 
 with :: (Text, c) -> Context c -> (Context c -> f) -> f
@@ -91,6 +96,7 @@ unConst :: Constant Type -> Expr Type
 unConst = \case
   CLambda x b -> Lambda x b
   CNum n ty -> Num n ty
+  _ -> error "unreachable"
 
 lookup :: Context (Constant Type) -> Text -> Constant Type
 lookup ctx = fromMaybe (error $ show ctx) . flip Map.lookup (defs ctx)

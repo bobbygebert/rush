@@ -4,6 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Type (typeOf, typeOfP, spanOf, typeItem, Type (..), spec) where
 
@@ -15,7 +16,8 @@ import qualified Data.List as List hiding (lookup)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, null, unlines, zip)
-import Expression
+import Expression hiding (Type)
+import qualified Expression
 import GHC.RTS.Flags (ProfFlags (descrSelector))
 import Infer hiding (Type)
 import qualified Infer
@@ -30,7 +32,9 @@ data Type
   | TTup [Type]
   | TList Type
   | TVar Text Span
+  | TData (Text, Span)
   | Type :-> Type
+  | Kind Span
   deriving (Eq)
 
 instance Show Type where
@@ -39,7 +43,9 @@ instance Show Type where
     TTup xs -> "(" ++ intercalate ", " (show <$> xs) ++ ")"
     TList tx -> "[" ++ show tx ++ "]"
     TVar txt _ -> "'" ++ unpack txt
+    TData (n, _) -> unpack n
     a :-> b -> show a ++ " -> " ++ show b
+    Kind {} -> "*"
 
 infixr 9 :->
 
@@ -73,6 +79,7 @@ typeExpr = \case
   Cons h t -> do
     h' <- typeExpr h
     Cons h' <$> constrained t (:~ TList (typeOf h'))
+  Data (c, s) -> Data . (c,) . withSpan s <$> lookup c
   -- TODO: unify tarms
   Match xs arms -> do
     xs' <- mapM typeExpr xs
@@ -94,6 +101,7 @@ typeExpr = \case
     ty <- fresh s
     f' <- constrained f (:~ typeOf x' :-> ty)
     pure $ App ty f' x'
+  Expression.Type (n, s1) (c, s2) -> pure $ Expression.Type (n, Kind s1) (c, TData (n, s2))
 
 typeBinOp op a b = op <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
 
@@ -115,10 +123,12 @@ typeOf = \case
   Tup xs -> TTup $ typeOf <$> xs
   List ty _ -> TList ty
   Cons h _ -> TList (typeOf h)
+  Data (_, ty) -> ty
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
   Lambda (_, tx) b -> tx :-> typeOf b
   App ty f x -> ty
+  Expression.Type (_, kind) _ -> kind
 
 typeOfP :: Pattern.Pattern Type -> Type
 typeOfP = \case
@@ -127,6 +137,7 @@ typeOfP = \case
   Pattern.Tup pats -> TTup $ typeOfP <$> pats
   Pattern.List ty _ -> TList ty
   Pattern.Cons h _ -> TList (typeOfP h)
+  Pattern.Data (_, ty) -> ty
 
 bindings :: Pattern.Pattern Type -> [(Text, Type)]
 bindings = \case
@@ -135,6 +146,7 @@ bindings = \case
   Pattern.Tup ps -> bindings =<< ps
   Pattern.List _ ps -> bindings =<< ps
   Pattern.Cons h t -> bindings h ++ bindings t
+  Pattern.Data (_, _) -> []
 
 typePattern :: Pattern.Pattern Span -> Infer Type (Pattern.Pattern Type)
 typePattern = \case
@@ -149,6 +161,7 @@ typePattern = \case
       pure p'
     pure $ Pattern.List ty ps'
   Pattern.Cons h t -> Pattern.Cons <$> typePattern h <*> typePattern t
+  Pattern.Data (c, s) -> Pattern.Data . (c,) <$> lookup c
 
 freshTypeVars :: [Span -> Type]
 freshTypeVars = TVar . pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
@@ -160,7 +173,9 @@ spanOf = \case
   TTup tys -> spanOf $ head tys
   TList tx -> spanOf tx
   TVar _ s -> s
+  TData (_, s) -> s
   a :-> b -> spanOf a
+  Kind s -> s
 
 withSpan :: Span -> Type -> Type
 withSpan s = \case
@@ -168,14 +183,18 @@ withSpan s = \case
   TTup tys -> TTup $ withSpan s <$> tys
   TList tx -> TList $ withSpan s tx
   TVar v _ -> TVar v s
+  TData (n, _) -> TData (n, s)
   a :-> b -> withSpan s a :-> withSpan s b
+  Kind _ -> Kind s
 
 instance Refine Type Type where
   apply (Substitutions ss) t@(TVar v s) = withSpan s (Map.findWithDefault t v ss)
   apply ss (a :-> b) = apply ss a :-> apply ss b
   apply ss (TTup tys) = TTup $ apply ss <$> tys
   apply ss (TList tx) = TList $ apply ss tx
+  apply _ t@TData {} = t
   apply _ t@TInt {} = t
+  apply _ t@Kind {} = t
 
 instance Unify Type where
   unifyingSubstitutions t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
@@ -194,8 +213,10 @@ instance Template Type where
     TInt _ -> Set.empty
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TList tx -> freeTypeVars tx
+    TData (_, _) -> Set.empty
     a :-> b -> freeTypeVars a `Set.union` freeTypeVars b
     TVar v _ -> Set.singleton v
+    Kind _ -> Set.empty
 
   instantiate ty = do
     let vs = Set.toList $ freeTypeVars ty
@@ -205,8 +226,10 @@ instance Template Type where
       TInt {} -> ty
       TTup tys -> TTup $ apply s <$> tys
       TList tx -> TList $ apply s tx
+      TData (_, _) -> ty
       TVar {} -> ty
       a :-> b -> apply s a :-> apply s b
+      Kind s -> Kind s
 
 {-
  ____
