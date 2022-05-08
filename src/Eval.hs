@@ -13,8 +13,6 @@ import Data.Text hiding (foldr, foldr1)
 import Expression
 import Infer (Context (Context, defs))
 import Parser (Span, emptySpan, span)
-import Pattern (Pattern)
-import qualified Pattern
 import Test.Hspec as Hspec
 import Type hiding (spec)
 import Prelude hiding (lookup)
@@ -66,24 +64,24 @@ eval ctx =
         Type (n, kind) (c, ty) -> CType (n, kind) (c, ty)
         Data {} -> error "todo"
 
-match ::
-  Context (Constant Type) -> [Expr Type] -> [Pattern Type] -> Expr Type -> Maybe (Constant Type)
+match :: Context (Constant Type) -> [Expr Type] -> [Expr Type] -> Expr Type -> Maybe (Constant Type)
 match ctx [] [] b = Just $ eval ctx b
 match ctx (x : xs) (p : ps) b =
   let x' = eval ctx x
    in case p of
-        Pattern.Binding x'' _ -> with (x'', x') ctx match xs ps b
-        Pattern.Num n ty
+        Var x'' _ -> with (x'', x') ctx match xs ps b
+        Num n ty
           | eval ctx (Num n ty) `eq` x' -> match ctx xs ps b
           | otherwise -> Nothing
           where
             eq :: Constant Type -> Constant Type -> Bool
             eq (CNum a _) (CNum b _) = a == b
             eq _ _ = error "unreachable"
-        Pattern.Tup {} -> error "todo"
-        Pattern.List {} -> error "todo"
-        Pattern.Cons {} -> error "todo"
-        Pattern.Data {} -> error "todo"
+        Tup {} -> error "todo"
+        List {} -> error "todo"
+        Cons {} -> error "todo"
+        Data {} -> error "todo"
+        _ -> error "unreachable"
 match _ _ _ _ = error "unreachable"
 
 with :: (Text, c) -> Context c -> (Context c -> f) -> f
@@ -128,13 +126,13 @@ spec = describe "Eval" $ do
   it "evaluates numeric match" $ do
     eval
       emptyContext
-      (Match [Num "1" (TInt s0)] [([Pattern.Num "1" (TInt s1)], Num "2" (TInt s2))])
+      (Match [Num "1" (TInt s0)] [([Num "1" (TInt s1)], Num "2" (TInt s2))])
       `shouldBe` CNum "2" (TInt s2)
 
   it "evaluates binding match" $ do
     eval
       emptyContext
-      (Match [Num "2" (TInt s0)] [([Pattern.Binding "x" (TInt s1)], Var "x" (TInt s2))])
+      (Match [Num "2" (TInt s0)] [([Var "x" (TInt s1)], Var "x" (TInt s2))])
       `shouldBe` CNum "2" (TInt s0)
 
   it "evaluates multi parameter match" $ do
@@ -142,7 +140,7 @@ spec = describe "Eval" $ do
       emptyContext
       ( Match
           [Num "1" (TInt s0), Num "2" (TInt s1)]
-          [([Pattern.Num "1" (TInt s2), Pattern.Binding "x" (TInt s3)], Var "x" (TInt s4))]
+          [([Num "1" (TInt s2), Var "x" (TInt s3)], Var "x" (TInt s4))]
       )
       `shouldBe` CNum "2" (TInt s1)
 
@@ -151,8 +149,8 @@ spec = describe "Eval" $ do
       emptyContext
       ( Match
           [Num "2" (TInt s0)]
-          [ ([Pattern.Num "1" (TInt s1)], Num "1" (TInt s2)),
-            ([Pattern.Num "2" (TInt s3)], Num "3" (TInt s4))
+          [ ([Num "1" (TInt s1)], Num "1" (TInt s2)),
+            ([Num "2" (TInt s3)], Num "3" (TInt s4))
           ]
       )
       `shouldBe` CNum "3" (TInt s4)

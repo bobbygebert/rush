@@ -14,7 +14,6 @@ import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, unwords, zip)
 import Infer
 import Parser (Span, as, emptySpan)
-import qualified Pattern
 import Text.PrettyPrint
 import Prelude hiding ((<>))
 
@@ -60,7 +59,7 @@ data Expr t
   | List t [Expr t]
   | Cons (Expr t) (Expr t)
   | Data (Text, t)
-  | Match [Expr t] [([Pattern.Pattern t], Expr t)]
+  | Match [Expr t] [([Expr t], Expr t)]
   | Fn Type (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | Union (Map.Map Text Type) Text (Expr t)
@@ -128,6 +127,7 @@ vdoc = \case
       showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
   Union ty disc val -> text (show ty) <> "." <> text (unpack disc) <> "@" <> vdoc val
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
+  EType (n, _) (_, _) -> text $ unpack n
 
 showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
 
@@ -236,15 +236,6 @@ typeOf = \case
   Union ty disc val -> TUnion ty
   App ty f x -> ty
   EType (_, k) _ -> k
-
-typeOfP :: Pattern.Pattern Type -> Type
-typeOfP = \case
-  Pattern.Binding _ ty -> ty
-  Pattern.Num _ ty -> ty
-  Pattern.Tup pats -> TTup $ typeOfP <$> pats
-  Pattern.List ty _ -> TList ty
-  Pattern.Cons h _ -> TList (typeOfP h)
-  Pattern.Data (_, ty) -> ty
 
 -- TODO: Merge Spans
 spanOf :: Type -> Span

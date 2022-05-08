@@ -27,7 +27,6 @@ import qualified Expression as Rush
 import IR
 import Infer
 import Parser (Span, emptySpan)
-import qualified Pattern
 import qualified Type as Rush
 import Prelude hiding (init, lookup)
 
@@ -243,7 +242,7 @@ closeOverExpr parent e = case e of
   Rush.Match xs as -> do
     xs' <- mapM (closeOverExpr parent) xs
     as' <- mapM match as
-    let tas = fmap typeOfP . fst <$> as'
+    let tas = fmap typeOf . fst <$> as'
     let txs = typeOf <$> xs'
     mapM_ (mapM_ (ensure . uncurry (:~))) (zip txs <$> tas)
     return $ Match xs' as'
@@ -253,16 +252,17 @@ closeOverExpr parent e = case e of
         b' <- with (typedBindings =<< ps') (closeOverExpr parent b)
         return (ps', b')
       closeOverPattern = \case
-        Pattern.Binding b ty -> Pattern.Binding b <$> init ty
-        Pattern.Num n ty -> Pattern.Num n <$> init ty
-        Pattern.Tup xs -> Pattern.Tup <$> mapM closeOverPattern xs
-        Pattern.List ty xs -> do
+        Rush.Var b ty -> Var b <$> init ty
+        Rush.Num n ty -> Num n <$> init ty
+        Rush.Tup xs -> Tup <$> mapM closeOverPattern xs
+        Rush.List ty xs -> do
           xs' <- mapM closeOverPattern xs
           ty' <- init ty
-          mapM_ (ensure . (ty' :~) . typeOfP) xs'
-          pure $ Pattern.List ty' xs'
-        Pattern.Cons h t -> Pattern.Cons <$> closeOverPattern h <*> closeOverPattern t
-        Pattern.Data (n, ty) -> Pattern.Data . (n,) <$> init ty
+          mapM_ (ensure . (ty' :~) . typeOf) xs'
+          pure $ List ty' xs'
+        Rush.Cons h t -> Cons <$> closeOverPattern h <*> closeOverPattern t
+        Rush.Data (n, ty) -> Data . (n,) <$> init ty
+        _ -> error "unreachable"
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent
     tx' <- init tx
@@ -320,19 +320,21 @@ captures bound =
             excludeBindings ps =
               Map.filterWithKey
                 (curry $ not . (`Set.member` foldr (Set.union . bindings) Set.empty ps) . fst)
+            bindings = Set.fromList . (fst <$>) . Rush.bindings
         Rush.Type (_, _) (_, _) -> pure Map.empty
 
-bindings :: Pattern.Pattern b -> Set.Set Text
-bindings = Set.fromList . fmap fst . typedBindings
+bindings :: Expr b -> Set.Set Text
+bindings = Set.fromList . (fst <$>) . typedBindings
 
-typedBindings :: Pattern.Pattern b -> [(Text, b)]
+typedBindings :: Expr b -> [(Text, b)]
 typedBindings = \case
-  Pattern.Binding x tx -> [(x, tx)]
-  Pattern.Num _ _ -> []
-  Pattern.Tup ps -> typedBindings =<< ps
-  Pattern.List _ ps -> typedBindings =<< ps
-  Pattern.Cons h t -> typedBindings h ++ typedBindings t
-  Pattern.Data (_, _) -> []
+  Var x tx -> [(x, tx)]
+  Num _ _ -> []
+  Tup ps -> typedBindings =<< ps
+  List _ ps -> typedBindings =<< ps
+  Cons h t -> typedBindings h ++ typedBindings t
+  Data (_, _) -> []
+  _ -> error "unreachable"
 
 freshName :: Build Text
 freshName = do

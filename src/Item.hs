@@ -8,7 +8,6 @@ import qualified Ast
 import Control.Monad
 import Data.Text hiding (foldr, head, zip)
 import Expression
-import qualified Pattern
 
 data Item s = Item {name :: Text, ty :: s, value :: Expr s}
   deriving (Show, Eq, Foldable, Functor)
@@ -19,7 +18,7 @@ desugar = \case
   Ast.Fn (n, s) arms -> Item n s (desugarFnArms arms)
   Ast.Type (n, s1) (c, s2) -> Item n s1 (Type (c, s2) (c, s2))
 
-desugarFnArms :: [([Pattern.Pattern c], Expr c)] -> Expr c
+desugarFnArms :: [([Expr c], Expr c)] -> Expr c
 desugarFnArms (arm@(ps, _) : arms) = close args
   where
     close [] = Match (uncurry Var <$> args) (arm : arms)
@@ -27,12 +26,13 @@ desugarFnArms (arm@(ps, _) : arms) = close args
     args = zip freshNames cs
     cs = getC <$> ps
     getC = \case
-      Pattern.Binding _ c' -> c'
-      Pattern.Num _ c' -> c'
-      Pattern.Tup ps -> getC $ head ps
-      Pattern.List c' _ -> c'
-      Pattern.Cons h _ -> getC h
-      Pattern.Data (_, c') -> c'
+      Var _ c' -> c'
+      Num _ c' -> c'
+      Tup ps -> getC $ head ps
+      List c' _ -> c'
+      Cons h _ -> getC h
+      Data (_, c') -> c'
+      _ -> error "todo: better error message"
 desugarFnArms _ = error "unreachable"
 
 freshNames :: [Text]

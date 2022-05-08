@@ -39,6 +39,7 @@ data Context t = Context {defs :: Map.Map Name t}
   deriving (Show)
 
 data Definitions t = Definitions {local :: Context t, global :: Context t}
+  deriving (Show)
 
 type Solve = Except TypeError
 
@@ -102,15 +103,16 @@ bind v t
   | otherwise = return (Substitutions $ Map.singleton v t)
 
 lookup ::
-  (Show t, Refine t t, Unify t, Template t, TypeVarStream m t, Globals t c, Locals t c) =>
+  (Show c, Show t, Refine t t, Unify t, Template t, TypeVarStream m t, Globals t c, Locals t c) =>
   Name ->
   InferT m t c t
 lookup v = do
+  env <- ask
   local <- asks (Map.lookup v . defs . locals)
   global <- instantiate =<< asks (Map.lookup v . defs . globals)
   case local <|> global of
     Just t -> pure t
-    Nothing -> throwError . pack $ show v ++ " is undefined"
+    Nothing -> throwError . pack $ show v ++ " is undefined in: " ++ show env
 
 type FreshTypeVarStream t = [Span -> t]
 

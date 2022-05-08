@@ -7,7 +7,6 @@ module Expression (Expr (..)) where
 
 import Data.List (intercalate)
 import Data.Text hiding (foldr, intercalate, unwords)
-import qualified Pattern
 
 data Expr c
   = Num Text c
@@ -21,7 +20,7 @@ data Expr c
   | List c [Expr c]
   | Cons (Expr c) (Expr c)
   | Data (Text, c)
-  | Match [Expr c] [([Pattern.Pattern c], Expr c)]
+  | Match [Expr c] [([Expr c], Expr c)]
   | Lambda (Text, c) (Expr c)
   | App c (Expr c) (Expr c)
   | Type (Text, c) (Text, c)

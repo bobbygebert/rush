@@ -6,7 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Type (typeOf, typeOfP, spanOf, typeItem, Type (..), spec) where
+module Type (bindings, typeOf, spanOf, typeItem, Type (..), spec) where
 
 import Ast
 import Control.Monad
@@ -23,7 +23,6 @@ import Infer hiding (Type)
 import qualified Infer
 import Item
 import Parser (Span, emptySpan, span)
-import qualified Pattern
 import Test.Hspec
 import Prelude hiding (lookup)
 
@@ -84,7 +83,7 @@ typeExpr = \case
   Match xs arms -> do
     xs' <- mapM typeExpr xs
     bs' <- mapM match arms
-    let tps = fmap typeOfP . fst <$> bs'
+    let tps = fmap typeOf . fst <$> bs'
     let txs = typeOf <$> xs'
     mapM_ (mapM_ (ensure . uncurry (:~))) (zip txs <$> tps)
     return $ Match xs' bs'
@@ -130,38 +129,31 @@ typeOf = \case
   App ty f x -> ty
   Expression.Type (_, kind) _ -> kind
 
-typeOfP :: Pattern.Pattern Type -> Type
-typeOfP = \case
-  Pattern.Binding _ ty -> ty
-  Pattern.Num _ ty -> ty
-  Pattern.Tup pats -> TTup $ typeOfP <$> pats
-  Pattern.List ty _ -> TList ty
-  Pattern.Cons h _ -> TList (typeOfP h)
-  Pattern.Data (_, ty) -> ty
-
-bindings :: Pattern.Pattern Type -> [(Text, Type)]
+bindings :: Expr Type -> [(Text, Type)]
 bindings = \case
-  Pattern.Binding x tx -> [(x, tx)]
-  Pattern.Num _ _ -> []
-  Pattern.Tup ps -> bindings =<< ps
-  Pattern.List _ ps -> bindings =<< ps
-  Pattern.Cons h t -> bindings h ++ bindings t
-  Pattern.Data (_, _) -> []
+  Var x tx -> [(x, tx)]
+  Num _ _ -> []
+  Tup ps -> bindings =<< ps
+  List _ ps -> bindings =<< ps
+  Cons h t -> bindings h ++ bindings t
+  Data (_, _) -> []
+  _ -> error "unreachable"
 
-typePattern :: Pattern.Pattern Span -> Infer Type (Pattern.Pattern Type)
+typePattern :: Expr Span -> Infer Type (Expr Type)
 typePattern = \case
-  Pattern.Num n s -> pure $ Pattern.Num n (TInt s)
-  Pattern.Binding b s -> Pattern.Binding b <$> fresh s
-  Pattern.Tup ps -> Pattern.Tup <$> mapM typePattern ps
-  Pattern.List s ps -> do
+  Num n s -> pure $ Num n (TInt s)
+  Var b s -> Var b <$> fresh s
+  Tup ps -> Tup <$> mapM typePattern ps
+  List s ps -> do
     ty <- fresh s
     ps' <- forM ps $ \p -> do
       p' <- typePattern p
-      ensure $ ty :~ typeOfP p'
+      ensure $ ty :~ typeOf p'
       pure p'
-    pure $ Pattern.List ty ps'
-  Pattern.Cons h t -> Pattern.Cons <$> typePattern h <*> typePattern t
-  Pattern.Data (c, s) -> Pattern.Data . (c,) <$> lookup c
+    pure $ List ty ps'
+  Cons h t -> Cons <$> typePattern h <*> typePattern t
+  Data (c, s) -> Data . (c,) <$> lookup c
+  _ -> error "unreachable"
 
 freshTypeVars :: [Span -> Type]
 freshTypeVars = TVar . pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
@@ -290,27 +282,27 @@ spec = describe "Type" $ do
 
     it "infers type of Match Expression" $ do
       let c = Context $ Map.fromList [("x", TInt s4)]
-      let i = Item "f" s0 (Match [Var "x" s1] [([Pattern.Num "1" s2], Num "2" s3)])
+      let i = Item "f" s0 (Match [Var "x" s1] [([Num "1" s2], Num "2" s3)])
       let o =
             Item
               "f"
               (TInt s0)
               ( Match
                   [Var "x" (TInt s1)]
-                  [([Pattern.Num "1" (TInt s2)], Num "2" (TInt s3))]
+                  [([Num "1" (TInt s2)], Num "2" (TInt s3))]
               )
       typeItem c i `shouldBe` Right o
 
     it "infers type of Tup" $ do
       let c = Context Map.empty
-      let i = Item "f" s0 (Match [Tup [Num "1" s1]] [([Pattern.Tup [Pattern.Num "1" s2]], Num "2" s3)])
+      let i = Item "f" s0 (Match [Tup [Num "1" s1]] [([Tup [Num "1" s2]], Num "2" s3)])
       let o =
             Item
               "f"
               (TInt s0)
               ( Match
                   [Tup [Num "1" (TInt s1)]]
-                  [([Pattern.Tup [Pattern.Num "1" (TInt s2)]], Num "2" (TInt s3))]
+                  [([Tup [Num "1" (TInt s2)]], Num "2" (TInt s3))]
               )
       typeItem c i `shouldBe` Right o
 

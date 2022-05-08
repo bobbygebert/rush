@@ -33,7 +33,6 @@ library
       Lib
       Monomorphize
       Parser
-      Pattern
       Type
   other-modules:
       Paths_rush

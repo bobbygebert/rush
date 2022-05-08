@@ -36,7 +36,6 @@ import LLVM.IRBuilder hiding (buildModule, fresh)
 import LLVM.Prelude hiding (EQ, lookup, null)
 import LLVM.Pretty (ppll)
 import Parser (emptySpan)
-import Pattern
 import Test.Hspec
 import Prelude hiding (EQ, lookup, null)
 
@@ -183,7 +182,7 @@ buildMatchArms ::
   Name ->
   [Text] ->
   [(Operand, Name)] ->
-  [([Pattern.Pattern Rush.Type], Rush.Expr Rush.Type)] ->
+  [([Rush.Expr Rush.Type], Rush.Expr Rush.Type)] ->
   m [(Operand, Name)]
 buildMatchArms _ _ tried [] = do
   panic
@@ -198,24 +197,24 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
       br returnBlock
       (result,) <$> currentBlock
     buildMatchArm returnBlock nextBlock (x : xs) (p : ps) e = case p of
-      Binding x' _ -> do
+      Rush.Var x' _ -> do
         x'' <- lookup x
         with [(x', x'')] $ buildMatchArm returnBlock nextBlock xs ps e
-      Num n _ -> mdo
+      Rush.Num n _ -> mdo
         let n' = parseInt n
         x' <- lookup x
         matches <- icmp EQ x' n'
         condBr matches continueBlock nextBlock
         continueBlock <- block
         buildMatchArm returnBlock nextBlock xs ps e
-      Tup ps' -> case ps' of
+      Rush.Tup ps' -> case ps' of
         [] -> buildMatchArm returnBlock nextBlock xs ps e
         ps' -> do
           x' <- mkRef =<< lookup x
           xs' <- mapM (const fresh) ps'
           xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] ps')
           with (zip xs' xs'') $ buildMatchArm returnBlock nextBlock (xs' ++ xs) (ps' ++ ps) e
-      List tx ps' -> case ps' of
+      Rush.List tx ps' -> case ps' of
         [] -> mdo
           node <- flip ptrtoint i64 =<< mkRef =<< lookup x
           matches <- icmp EQ node (int64 0)
@@ -228,10 +227,10 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
           h' <- gep node [int32 0, int32 0]
           t <- fresh
           t' <- gep node [int32 0, int32 1]
-          let tps' = List tx tps
+          let tps' = Rush.List tx tps
           with [(h, h'), (t, t')] $
             buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tps' : ps) e
-      Cons hp tp -> do
+      Rush.Cons hp tp -> do
         node <- mkRef =<< lookup x
         h <- fresh
         h' <- gep node [int32 0, int32 0]
@@ -239,7 +238,8 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
         t' <- gep node [int32 0, int32 1]
         with [(h, h'), (t, t')] $
           buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
-      Data {} -> buildMatchArm returnBlock nextBlock xs ps e
+      Rush.Data {} -> buildMatchArm returnBlock nextBlock xs ps e
+      _ -> error "unreachable"
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
 callUnionClosure ::

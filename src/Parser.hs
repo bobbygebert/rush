@@ -10,7 +10,6 @@ import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
 import Expression
-import qualified Pattern
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
@@ -54,7 +53,6 @@ fn = do
   arms <- (:) <$> arm f <*> many (try $ newline *> arm f)
   return $ Ast.Fn (f, s) arms
   where
-    arm :: Text -> Parser ([Pattern.Pattern Span], Expr Span)
     arm f = do
       string f *> hspace
       (,) <$> pats <*> (eq *> expr)
@@ -62,40 +60,13 @@ fn = do
 ty :: Parser (Ast.Ast Span)
 ty = Ast.Type <$> (spanned upperIdent <* eq) <*> spanned upperIdent
 
-pats :: Parser [Pattern.Pattern Span]
-pats = (:) <$> pat <*> many (try (hspace *> pat))
-
-pat :: Parser (Pattern.Pattern Span)
-pat = binding <|> numPat <|> listPat <|> try (parens consPat) <|> tuplePat <|> constructorPat
-
-binding :: Parser (Pattern.Pattern Span)
-binding = uncurry Pattern.Binding <$> spanned lowerIdent
-
-numPat :: Parser (Pattern.Pattern Span)
-numPat = uncurry Pattern.Num <$> spanned (pack <$> some digitChar)
-
-tuplePat :: Parser (Pattern.Pattern Span)
-tuplePat = Pattern.Tup <$> parens (pat `sepBy1` (char ',' *> hspace))
+pats :: Parser [Expr Span]
+pats = (:) <$> atom <*> many (try (hspace *> atom))
 
 tuple :: Parser (Expr Span)
 tuple = Tup <$> parens ((:) <$> (expr <* sep) <*> (expr `sepBy1` sep))
   where
     sep = (hspace *> char ',') *> hspace
-
-listPat :: Parser (Pattern.Pattern Span)
-listPat = listLiteralPat
-
-consPat :: Parser (Pattern.Pattern Span)
-consPat =
-  Pattern.Cons
-    <$> ((pat <* hspace) <* (string "::" <* hspace))
-    <*> (listLiteralPat <|> try consPat <|> pat)
-
-constructorPat :: Parser (Pattern.Pattern Span)
-constructorPat = Pattern.Data <$> spanned upperIdent
-
-listLiteralPat :: Parser (Pattern.Pattern Span)
-listLiteralPat = uncurry (flip Pattern.List) <$> spanned (brackets (pat `sepBy` (char ',' *> hspace)))
 
 listLiteral :: Parser (Expr Span)
 listLiteral = uncurry (flip List) <$> spanned (brackets (expr `sepBy` (char ',' *> hspace)))
@@ -181,7 +152,6 @@ spec = Hspec.describe "Parser" $ do
   Hspec.describe "parseModule" parseModuleSpec
   Hspec.describe "fn" fnSpec
   Hspec.describe "app" appSpec
-  Hspec.describe "pat" patSpec
   Hspec.describe "constant" constantSpec
   Hspec.describe "expr" exprSpec
   Hspec.describe "list" listSpec
@@ -205,14 +175,14 @@ fnSpec = do
       "fn with single binder"
       "f x = x"
       as
-      (Ast.Fn ("f", ()) [([Pattern.Binding "x" ()], Var "x" ())])
+      (Ast.Fn ("f", ()) [([Var "x" ()], Var "x" ())])
 
   item <* eof
     & parses
       "fn with multiple parameters"
       "f x 123 = x"
       as
-      (Ast.Fn ("f", ()) [([Pattern.Binding "x" (), Pattern.Num "123" ()], Var "x" ())])
+      (Ast.Fn ("f", ()) [([Var "x" (), Num "123" ()], Var "x" ())])
 
   item <* newline <* eof
     & parses
@@ -223,7 +193,7 @@ fnSpec = do
           ]
       )
       as
-      (Ast.Fn ("f", ()) [([Pattern.Num "1" ()], Num "2" ()), ([Pattern.Num "2" ()], Num "3" ())])
+      (Ast.Fn ("f", ()) [([Num "1" ()], Num "2" ()), ([Num "2" ()], Num "3" ())])
 
 appSpec = do
   app <* eof
@@ -238,48 +208,6 @@ appSpec = do
       "g (x + x)"
       as
       (App () (Var "g" ()) (Add (Var "x" ()) (Var "x" ())))
-
-patSpec = do
-  pat <* eof
-    & parses
-      "binder pattern"
-      "x"
-      as
-      (Pattern.Binding "x" ())
-
-  pat <* eof
-    & parses
-      "num pattern"
-      "123"
-      as
-      (Pattern.Num "123" ())
-
-  pat <* eof
-    & parses
-      "tuple pattern"
-      "(x, y, z)"
-      as
-      (Pattern.Tup [Pattern.Binding "x" (), Pattern.Binding "y" (), Pattern.Binding "z" ()])
-
-  pat <* eof
-    & parses
-      "cons pattern"
-      "(x :: y :: [])"
-      as
-      ( Pattern.Cons
-          (Pattern.Binding "x" ())
-          ( Pattern.Cons
-              (Pattern.Binding "y" ())
-              (Pattern.List () [])
-          )
-      )
-
-  pat <* eof
-    & parses
-      "marker pattern"
-      "Marker"
-      as
-      (Pattern.Data ("Marker", ()))
 
 constantSpec = do
   item <* eof
