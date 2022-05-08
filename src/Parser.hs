@@ -105,7 +105,11 @@ expr :: Parser (Expr Span)
 expr =
   makeExprParser
     term
-    [ [l "+" Add],
+    [ [l "*" Mul],
+      [l "/" Div],
+      [l "%" Mod],
+      [l "+" Add],
+      [l "-" Sub],
       [r "::" Cons]
     ]
   where

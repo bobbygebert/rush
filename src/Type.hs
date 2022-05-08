@@ -60,6 +60,12 @@ typeItem context (Item n s e) = normalize <$> (solve =<< infer)
 typeExpr :: Expr Span -> Infer Type (Expr Type)
 typeExpr = \case
   Num n c -> pure $ Num n (TInt c)
+  Var v c -> Var v . withSpan c <$> lookup v
+  Add a b -> typeBinOp Add a b
+  Sub a b -> typeBinOp Sub a b
+  Mul a b -> typeBinOp Mul a b
+  Div a b -> typeBinOp Div a b
+  Mod a b -> typeBinOp Mod a b
   Tup xs -> Tup <$> mapM typeExpr xs
   List c xs -> do
     ty <- fresh c
@@ -67,8 +73,6 @@ typeExpr = \case
   Cons h t -> do
     h' <- typeExpr h
     Cons h' <$> constrained t (:~ TList (typeOf h'))
-  Var v c -> Var v . withSpan c <$> lookup v
-  Add a b -> Add <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
   -- TODO: unify tarms
   Match xs arms -> do
     xs' <- mapM typeExpr xs
@@ -91,6 +95,8 @@ typeExpr = \case
     f' <- constrained f (:~ typeOf x' :-> ty)
     pure $ App ty f' x'
 
+typeBinOp op a b = op <$> constrained a (:~ TInt emptySpan) <*> constrained b (:~ TInt emptySpan)
+
 constrained :: Expr Span -> (Type -> Constraint Type) -> Infer Type (Expr Type)
 constrained e c = do
   e' <- typeExpr e
@@ -100,11 +106,15 @@ constrained e c = do
 typeOf :: Expr Type -> Type
 typeOf = \case
   Num _ ty -> ty
+  Var _ ty -> ty
+  Add a _ -> typeOf a
+  Sub a _ -> typeOf a
+  Mul a _ -> typeOf a
+  Div a _ -> typeOf a
+  Mod a _ -> typeOf a
   Tup xs -> TTup $ typeOf <$> xs
   List ty _ -> TList ty
   Cons h _ -> TList (typeOf h)
-  Var _ ty -> ty
-  Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
   Lambda (_, tx) b -> tx :-> typeOf b

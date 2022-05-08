@@ -89,15 +89,18 @@ buildExpr ::
   (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Rush.Expr Rush.Type ->
   m Operand
-buildExpr e =
+buildExpr e = do
+  let buildVal x = mkVal (Rush.typeOf x) =<< buildExpr x
+  let buildBinOp op a b = join $ op <$> buildVal a <*> buildVal b
   case e of
     Rush.Num n _ -> pure $ ConstantOperand $ parseIntConst n
     Rush.Var v _ -> lookup v
-    Rush.Add a b ->
-      join $
-        add
-          <$> (mkVal (Rush.typeOf a) =<< buildExpr a)
-          <*> (mkVal (Rush.typeOf b) =<< buildExpr b)
+    Rush.Add a b -> buildBinOp add a b
+    Rush.Sub a b -> buildBinOp sub a b
+    Rush.Mul a b -> buildBinOp mul a b
+    Rush.Div a b -> buildBinOp udiv a b
+    Rush.Mod a b -> buildBinOp urem a b
+    --Rush.Mod a b -> buildBinOp add a b
     Rush.Tup xs -> do
       t <- (\ty -> alloca ty Nothing 0) =<< asValue (Rush.typeOf e)
       xs' <- mapM buildExpr xs

@@ -127,7 +127,11 @@ monomorphize locals e = case e of
   List ty xs -> List ty <$> mapM (monomorphize locals) xs
   Cons h t -> Cons <$> monomorphize locals h <*> monomorphize locals t
   Var v ty -> extract v ty locals e
-  Add a b -> Add <$> monomorphize locals a <*> monomorphize locals b
+  Add a b -> monomorphizeBinOp locals Add a b
+  Sub a b -> monomorphizeBinOp locals Sub a b
+  Mul a b -> monomorphizeBinOp locals Mul a b
+  Div a b -> monomorphizeBinOp locals Div a b
+  Mod a b -> monomorphizeBinOp locals Mod a b
   Match xs as -> Match <$> mapM (monomorphize locals) xs <*> mapM match as
     where
       match (ps, b) =
@@ -137,6 +141,8 @@ monomorphize locals e = case e of
   Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
   Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
+
+monomorphizeBinOp locals op a b = op <$> monomorphize locals a <*> monomorphize locals b
 
 -- TODO: Figure out why union closure type isn't being inferred.
 extract :: Text -> Type -> Set.Set Text -> Expr Type -> Generate (Expr Type)
@@ -198,6 +204,12 @@ closeOverConstant (Rush.Named name c) = ty'
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
   Rush.Num n ty -> Num n <$> init ty
+  Rush.Var x ty -> Var x <$> lookup x
+  Rush.Add a b -> Add <$> closeOverExpr parent a <*> closeOverExpr parent b
+  Rush.Sub a b -> Sub <$> closeOverExpr parent a <*> closeOverExpr parent b
+  Rush.Mul a b -> Mul <$> closeOverExpr parent a <*> closeOverExpr parent b
+  Rush.Div a b -> Div <$> closeOverExpr parent a <*> closeOverExpr parent b
+  Rush.Mod a b -> Mod <$> closeOverExpr parent a <*> closeOverExpr parent b
   Rush.Tup xs -> Tup <$> mapM (closeOverExpr parent) xs
   Rush.List ty xs -> do
     xs' <- mapM (closeOverExpr parent) xs
@@ -222,8 +234,6 @@ closeOverExpr parent e = case e of
         _ -> error "unreachable"
       unions closures xs' = uncurry (Union closures) . discriminatedVal <$> xs'
   Rush.Cons h t -> Cons <$> closeOverExpr parent h <*> closeOverExpr parent t
-  Rush.Var x ty -> Var x <$> lookup x
-  Rush.Add a b -> Add <$> closeOverExpr parent a <*> closeOverExpr parent b
   Rush.Match xs as -> do
     xs' <- mapM (closeOverExpr parent) xs
     as' <- mapM match as
@@ -276,16 +286,20 @@ captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Typ
 captures bound =
   let unionMany = foldr Map.union Map.empty
    in \case
-        Rush.Lambda (x, tx) b ->
-          Map.filterWithKey (curry $ (/= x) . fst) <$> captures (Set.singleton x) b
-        Rush.App _ f x -> Map.union <$> captures bound f <*> captures bound x
+        Rush.Num {} -> return Map.empty
         Rush.Var x (_ Rush.:-> _) -> return Map.empty
         Rush.Var x tx -> do
           if x `Set.member` bound
             then return Map.empty
             else Map.singleton x . Var x <$> init tx
-        Rush.Num {} -> return Map.empty
         Rush.Add a b -> Map.union <$> captures bound a <*> captures bound b
+        Rush.Sub a b -> Map.union <$> captures bound a <*> captures bound b
+        Rush.Mul a b -> Map.union <$> captures bound a <*> captures bound b
+        Rush.Div a b -> Map.union <$> captures bound a <*> captures bound b
+        Rush.Mod a b -> Map.union <$> captures bound a <*> captures bound b
+        Rush.Lambda (x, tx) b ->
+          Map.filterWithKey (curry $ (/= x) . fst) <$> captures (Set.singleton x) b
+        Rush.App _ f x -> Map.union <$> captures bound f <*> captures bound x
         Rush.Tup xs -> unionMany <$> mapM (captures bound) xs
         Rush.List _ xs -> unionMany <$> mapM (captures bound) xs
         Rush.Cons h t -> Map.union <$> captures bound h <*> captures bound t

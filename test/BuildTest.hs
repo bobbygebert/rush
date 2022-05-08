@@ -109,6 +109,12 @@ spec = describe "rush build" $ do
     o <- evalInt r d "y"
     o `shouldBe` "123"
 
+  it "builds binary operations" $ do
+    r <- rush ["substitute x = (x + 2 * x / 3) % 4 - x"]
+    d <- decl ["int64_t substitute(int64_t);"]
+    o <- evalInt r d "substitute(4)"
+    o `shouldBe` "-2"
+
   it "builds simple functions taking and returning Int" $ do
     r <- rush ["f x = x + 2"]
     d <- decl ["int64_t f(int64_t);"]

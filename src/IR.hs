@@ -45,12 +45,16 @@ data Type
 
 data Expr t
   = Num Text t
+  | Var Text t
+  | Add (Expr t) (Expr t)
+  | Sub (Expr t) (Expr t)
+  | Mul (Expr t) (Expr t)
+  | Div (Expr t) (Expr t)
+  | Mod (Expr t) (Expr t)
   | Unit
   | Tup [Expr t]
   | List t [Expr t]
   | Cons (Expr t) (Expr t)
-  | Var Text t
-  | Add (Expr t) (Expr t)
   | Match [Expr t] [([Pattern.Pattern t], Expr t)]
   | Fn Type (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
@@ -82,6 +86,12 @@ instance (Show t) => Show (Expr t) where
 vdoc :: (Show t) => Expr t -> Doc
 vdoc = \case
   Num n _ -> text $ unpack n
+  Var v ty -> parens $ text (unpack v) <> colon <+> text (show ty)
+  Add a b -> showBinOp "+" a b
+  Sub a b -> showBinOp "-" a b
+  Mul a b -> showBinOp "*" a b
+  Div a b -> showBinOp "/" a b
+  Mod a b -> showBinOp "%" a b
   Unit -> text "()"
   Tup xs -> parens $ cat $ punctuate comma (vdoc <$> xs)
   List _ xs -> brackets $ cat $ punctuate comma (vdoc <$> xs)
@@ -89,8 +99,6 @@ vdoc = \case
     where
       cons (Cons x xs) = vdoc x <+> "::" <+> cons xs
       cons x = vdoc x
-  Var v ty -> parens $ text (unpack v) <> colon <+> text (show ty)
-  Add a b -> parens $ vdoc a <+> char '+' <+> vdoc b
   Match xs ps ->
     hang (text "match" <+> cat (vdoc <$> xs)) 2 $
       braces $
@@ -111,6 +119,8 @@ vdoc = \case
       showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
   Union ty disc val -> text (show ty) <> "." <> text (unpack disc) <> "@" <> vdoc val
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
+
+showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
 
 instance Template Type where
   freeTypeVars = \case
@@ -192,12 +202,16 @@ unConst = \case
 typeOf :: Expr Type -> Type
 typeOf = \case
   Num _ ty -> ty
+  Var _ ty -> ty
+  Add a _ -> typeOf a
+  Sub a _ -> typeOf a
+  Mul a _ -> typeOf a
+  Div a _ -> typeOf a
+  Mod a _ -> typeOf a
   Unit -> TUnit
   Tup xs -> TTup $ typeOf <$> xs
   List tx _ -> TList tx
   Cons h _ -> TList (typeOf h)
-  Var _ ty -> ty
-  Add a _ -> typeOf a
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
   Fn cls a b -> TFn cls (snd a) (typeOf b)

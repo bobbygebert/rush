@@ -38,17 +38,22 @@ eval :: Context (Constant Type) -> Expr Type -> Constant Type
 eval ctx =
   let get = lookup ctx
       extend (x, c) = Context . Map.insert x c . Map.delete x . defs
+      evalBinOp op a b = case (eval ctx a, eval ctx b) of
+        (CNum a ty@TInt {}, CNum b TInt {}) ->
+          let c = pack . show $ read (unpack a) `op` read (unpack b)
+           in CNum c ty
+        _ -> error "unreachable"
    in \case
         Num n ty -> CNum n ty
+        Var v ty -> get v
+        Add a b -> evalBinOp (+) a b
+        Sub a b -> evalBinOp (-) a b
+        Mul a b -> evalBinOp (*) a b
+        Div a b -> evalBinOp (/) a b
+        Mod a b -> evalBinOp mod a b
         Tup {} -> error "todo"
         List {} -> error "todo"
         Cons {} -> error "todo"
-        Var v ty -> get v
-        Add a b -> case (eval ctx a, eval ctx b) of
-          (CNum a ty@TInt {}, CNum b TInt {}) ->
-            let c = pack . show $ read (unpack a) + read (unpack b)
-             in CNum c ty
-          _ -> error "unreachable"
         Match xs arms -> case msum $ uncurry (match ctx xs) <$> arms of
           Just c -> c
           Nothing -> error "non-exhaustive match"
