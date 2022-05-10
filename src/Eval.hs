@@ -9,18 +9,20 @@ module Eval (eval, spec, unConst, Constant (..), Named (..)) where
 import Control.Monad (msum)
 import qualified Data.Map as Map
 import Data.Maybe
-import Data.Text hiding (foldr, foldr1)
+import Data.Text hiding (foldr, foldr1, span)
+import Debug.Trace
 import Expression
 import Infer (Context (Context, defs))
-import Parser (Span, emptySpan, span)
+import Span
 import Test.Hspec as Hspec
 import Type hiding (spec)
-import Prelude hiding (lookup)
+import Prelude hiding (lookup, span)
 
 data Constant t
   = CNum Text t
+  | CData Text t [Constant t]
   | CLambda (Text, t) (Expr t)
-  | CType (Text, t) (Text, t)
+  | CType (Text, t) (Text, t) [Type]
   deriving (Show, Eq, Functor, Foldable)
 
 data Named t = Named Text (Constant t)
@@ -28,14 +30,19 @@ data Named t = Named Text (Constant t)
 
 instance Traversable Constant where
   traverse f (CNum n ty) = CNum n <$> f ty
+  traverse f (CData c ty xs) = CData c <$> f ty <*> traverse (traverse f) xs
   traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
-  traverse f (CType (n, k) (c, t)) = CType <$> ((n,) <$> f k) <*> ((c,) <$> f t)
+  traverse f (CType (n, k) (c, t) ts) =
+    CType
+      <$> ((n,) <$> f k)
+      <*> ((c,) <$> f t)
+      <*> pure ts
 
 instance Traversable Named where
   traverse f (Named n c) = Named n <$> traverse f c
 
 eval :: Context (Constant Type) -> Expr Type -> Constant Type
-eval ctx =
+eval ctx e =
   let get = lookup ctx
       extend (x, c) = Context . Map.insert x c . Map.delete x . defs
       evalBinOp op a b = case (eval ctx a, eval ctx b) of
@@ -43,7 +50,7 @@ eval ctx =
           let c = pack . show $ read (unpack a) `op` read (unpack b)
            in CNum c ty
         _ -> error "unreachable"
-   in \case
+   in trace ("evaluating: " ++ show e) $ case e of
         Num n ty -> CNum n ty
         Var v ty -> get v
         Add a b -> evalBinOp (+) a b
@@ -61,8 +68,7 @@ eval ctx =
         App ty f x -> case eval ctx f of
           CLambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
-        Type (n, kind) (c, ty) -> CType (n, kind) (c, ty)
-        Data {} -> error "todo"
+        Data c ty xs -> CData c ty (eval ctx <$> xs)
 
 match :: Context (Constant Type) -> [Expr Type] -> [Expr Type] -> Expr Type -> Maybe (Constant Type)
 match ctx [] [] b = Just $ eval ctx b
@@ -157,12 +163,12 @@ spec = describe "Eval" $ do
 
 emptyContext = Context {defs = Map.empty}
 
-s0 = Parser.span (8, 8) (8, 8)
+s0 = span "mod" (8, 8) (8, 8)
 
-s1 = Parser.span (1, 1) (1, 1)
+s1 = span "mod" (1, 1) (1, 1)
 
-s2 = Parser.span (2, 2) (2, 2)
+s2 = span "mod" (2, 2) (2, 2)
 
-s3 = Parser.span (3, 3) (3, 3)
+s3 = span "mod" (3, 3) (3, 3)
 
-s4 = Parser.span (4, 4) (4, 4)
+s4 = span "mod" (4, 4) (4, 4)

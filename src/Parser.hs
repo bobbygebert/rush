@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Parser where
@@ -5,28 +6,22 @@ module Parser where
 import qualified Ast
 import Control.Monad
 import Control.Monad.Combinators.Expr
+import Data.Bifunctor
 import Data.Function
 import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
 import Expression
+import Span
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
 import Text.Megaparsec
 import Text.Megaparsec.Char
+import Type
 import Prelude hiding (span, unlines)
 
-data Span = Span SourcePos SourcePos
-  deriving (Show, Eq, Ord)
-
 class Spanned a
-
-emptySpan :: Span
-emptySpan =
-  Span
-    (SourcePos "" (mkPos 1) (mkPos 1))
-    (SourcePos "" (mkPos 1) (mkPos 1))
 
 type Parser = Parsec Void Text
 
@@ -42,7 +37,7 @@ parseModule path source = case result of
         source
 
 item :: Parser (Ast.Ast Span)
-item = try constant <|> try fn <|> try ty
+item = try constant <|> try fn <|> try typeDef
 
 constant :: Parser (Ast.Ast Span)
 constant = Ast.Constant <$> (spanned lowerIdent <* eq) <*> expr
@@ -57,11 +52,15 @@ fn = do
       string f *> hspace
       (,) <$> pats <*> (eq *> expr)
 
-ty :: Parser (Ast.Ast Span)
-ty = Ast.Type <$> (spanned upperIdent <* eq) <*> spanned upperIdent
+typeDef :: Parser (Ast.Ast Span)
+typeDef = Ast.Type <$> (spanned upperIdent <* eq) <*> spanned upperIdent <*> many (hspace *> atom)
+  where
+    atom = tInt <|> tag
+    tInt = TInt . snd <$> spanned (string "Int")
+    tag = uncurry TData <$> spanned upperIdent <*> pure []
 
 pats :: Parser [Expr Span]
-pats = (:) <$> atom <*> many (try (hspace *> atom))
+pats = (:) <$> atomPat <*> many (try (hspace *> atomPat))
 
 tuple :: Parser (Expr Span)
 tuple = Tup <$> parens ((:) <$> (expr <* sep) <*> (expr `sepBy1` sep))
@@ -77,11 +76,13 @@ app = do
   (f, e) : (g, _) : fs <- ((,) <$> atom <*> getSourcePos) `sepBy1` hspace
   return $ foldl (\f (x, e) -> App (Span s e) f x) (App (Span s e) f g) fs
 
-tag :: Parser (Expr Span)
-tag = Data <$> spanned upperIdent
-
 constructor :: Parser (Expr Span)
-constructor = tag
+constructor = tag <|> parens prod
+  where
+    prod = uncurry Data <$> (spanned upperIdent <* hspace) <*> atom `sepBy` hspace
+
+tag :: Parser (Expr Span)
+tag = uncurry Data <$> spanned upperIdent <*> pure []
 
 -- TODO: Parse match expressions
 expr :: Parser (Expr Span)
@@ -101,17 +102,20 @@ expr =
     r :: Text -> (Expr Span -> Expr Span -> Expr Span) -> Operator Parser (Expr Span)
     r s e = InfixR $ try (e <$ (hspace *> string s <* hspace))
 
+atomPat :: Parser (Expr Span)
+atomPat = num <|> try constructor <|> var <|> listLiteral <|> try tuple <|> parens expr
+
 atom :: Parser (Expr Span)
-atom = num <|> var <|> tag <|> listLiteral <|> try tuple <|> parens expr
+atom = num <|> var <|> listLiteral <|> try tuple <|> parens expr
 
 term :: Parser (Expr Span)
-term = try constructor <|> try app <|> atom
+term = try app <|> atom
 
 num :: Parser (Expr Span)
 num = uncurry Num <$> spanned (pack <$> some digitChar)
 
 var :: Parser (Expr Span)
-var = uncurry Var <$> spanned lowerIdent
+var = uncurry Var <$> (spanned lowerIdent <|> spanned upperIdent)
 
 lowerIdent :: Parser Text
 lowerIdent = pack <$> ((:) <$> lowerChar <*> many alphaNumChar)
@@ -155,6 +159,7 @@ spec = Hspec.describe "Parser" $ do
   Hspec.describe "constant" constantSpec
   Hspec.describe "expr" exprSpec
   Hspec.describe "list" listSpec
+  Hspec.describe "constructor" constructorSpec
   Hspec.describe "type" typeSpec
   Hspec.describe "lowerIdent" lowerIdentSpec
   Hspec.describe "spanned" spannedSpec
@@ -165,8 +170,8 @@ parseModuleSpec = do
     $ parseModule testModule "x = 123\n"
       `shouldBe` Right
         [ Ast.Constant
-            ("x", span (1, 1) (1, 2))
-            (Num "123" (span (1, 5) (1, 8)))
+            ("x", span testModule (1, 1) (1, 2))
+            (Num "123" (span testModule (1, 5) (1, 8)))
         ]
 
 fnSpec = do
@@ -194,6 +199,13 @@ fnSpec = do
       )
       as
       (Ast.Fn ("f", ()) [([Num "1" ()], Num "2" ()), ([Num "2" ()], Num "3" ())])
+
+  item <* eof
+    & parses
+      "fn with constructor pattern"
+      "f (Pair x y) = x"
+      as
+      (Ast.Fn ("f", ()) [([Data "Pair" () [Var "x" (), Var "y" ()]], Var "x" ())])
 
 appSpec = do
   app <* eof
@@ -245,13 +257,28 @@ listSpec = do
       as
       (Cons (Num "1" ()) (Cons (Num "2" ()) (List () [])))
 
+constructorSpec = do
+  expr <* eof
+    & parses
+      "constructors"
+      "(Pair x y)"
+      as
+      (App () (App () (Var "Pair" ()) (Var "x" ())) (Var "y" ()))
+
 typeSpec = do
   item <* eof
     & parses
       "marker type"
       "Marker = Marker"
       as
-      (Ast.Type ("Marker", ()) ("Marker", ()))
+      (Ast.Type ("Marker", ()) ("Marker", ()) [])
+
+  item <* eof
+    & parses
+      "monomorphic product types"
+      "Pair = Pair Int Int"
+      as
+      (Ast.Type ("Pair", ()) ("Pair", ()) [TInt emptySpan, TInt emptySpan])
 
 lowerIdentSpec =
   Hspec.it
@@ -261,21 +288,25 @@ lowerIdentSpec =
 spannedSpec =
   Hspec.it
     "parses spanned inner"
-    $ parse (spanned lowerIdent) testModule "abc" `shouldParse` ("abc", span (1, 1) (1, 4))
+    $ parse (spanned lowerIdent) testModule "abc" `shouldParse` ("abc", span testModule (1, 1) (1, 4))
 
-plain :: Functor m => m c -> m ()
-plain = void
+class Plain f where
+  plain :: f s -> f ()
+
+instance Plain Ast.Ast where
+  plain = \case
+    Ast.Constant (x, _) a -> Ast.Constant (x, ()) (plain a)
+    Ast.Fn (f, _) arms -> Ast.Fn (f, ()) $ bimap (plain <$>) plain <$> arms
+    Ast.Type (n, _) (c, _) ts -> Ast.Type (n, ()) (c, ()) $ withSpan emptySpan <$> ts
+
+instance Plain Expr where
+  plain = void
 
 data As = As
 
 as = As
 
 testModule = "Lib.rush"
-
-span (l, c) (l', c') =
-  Span
-    (SourcePos testModule (mkPos l) (mkPos c))
-    (SourcePos testModule (mkPos l') (mkPos c'))
 
 parses description input As expected parser =
   Hspec.it

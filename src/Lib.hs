@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Lib (build) where
 
@@ -10,7 +11,7 @@ import Data.Either (partitionEithers)
 import Data.Function
 import Data.Functor
 import qualified Data.Map as Map
-import Data.Text
+import Data.Text hiding (unlines)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
 import Eval
@@ -20,10 +21,10 @@ import Infer (Context (Context, defs), TypeError)
 import Item
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
-import Parser (Span, parseModule)
+import Parser (parseModule)
+import Span
 import System.FilePath
 import Type
-import Prelude hiding (unlines)
 
 build :: FilePath -> Text -> Either [Text] Text
 build path source =
@@ -40,24 +41,31 @@ reduce = reduce' emptyContext
     reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name ty value) : is -> Named name c : reduce' ctx' is
+      (Item name ty term) : is -> Named name c : reduce' ctx' is
         where
-          c = eval ctx value
+          c = case term of
+            Item.Expr e -> eval ctx e
+            Item.Type (n, k) (Item.Constructor c t ts) -> CType (n, k) (c, t) ts
           ctx' = Context (Map.insert name c (defs ctx))
 
 inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
-inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' emptyContext
+inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' primitives
   where
     inferAndCheck' :: Context Type -> [Item Span] -> [Either TypeError (Item Type)]
     inferAndCheck' _ [] = []
     inferAndCheck' context (item : items) = case typeItem context item of
       Right item' -> do
-        let (name', ty') = case value item' of
-              Expression.Type (n, k) (c, ty) -> (c, ty)
-              _ -> (name item', ty item')
-        let context' = Context (Map.insert name' ty' (defs context))
-        Right item' : inferAndCheck' context' items
-      err -> err : inferAndCheck' context items
+        let tys = Map.fromList $ case value item' of
+              Item.Expr e -> trace ("defining: " ++ show (name item', ty item', value item')) [(name item', ty item')]
+              Item.Type (n, k) (Item.Constructor c ty _) -> trace ("defining: " ++ show (c, ty)) []
+        let context' =
+              Context $
+                Map.union (trace (unlines $ ("definining: " ++) . show <$> Map.toList (constructorTypes item)) constructorTypes item) $
+                  Map.union tys (defs context)
+        (Right <$> item' : constructors item) ++ inferAndCheck' context' items
+      err -> trace ("error: " ++ show err) err : inferAndCheck' context items
+
+primitives = Context {defs = Map.fromList [("Int", Kind emptySpan)]}
 
 emptyContext = Context {defs = Map.empty}
 

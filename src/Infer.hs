@@ -20,7 +20,7 @@ import Data.List (intercalate, partition)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, partition, tail, unlines, zip)
-import Parser (Span, emptySpan)
+import Span
 
 data Constraint t
   = (:~) t t

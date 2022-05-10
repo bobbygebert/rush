@@ -1,12 +1,12 @@
 import qualified BuildTest
 import qualified Eval
+import qualified Item
 import qualified Parser
 import Test.Hspec
-import qualified Type
 
 main :: IO ()
 main = hspec $ do
   Parser.spec
-  Type.spec
+  Item.spec
   Eval.spec
   BuildTest.spec

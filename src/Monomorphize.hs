@@ -14,7 +14,8 @@ import qualified Control.Monad.Reader as Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Bifunctor
-import Data.Function
+import Data.Function hiding (const)
+import qualified Data.Function as Functor
 import Data.Functor
 import Data.List hiding (init, lookup)
 import qualified Data.Map as Map
@@ -26,9 +27,9 @@ import qualified Eval as Rush
 import qualified Expression as Rush
 import IR
 import Infer
-import Parser (Span, emptySpan)
+import Span
 import qualified Type as Rush
-import Prelude hiding (init, lookup)
+import Prelude hiding (const, init, lookup)
 
 ir :: [Rush.Named Rush.Type] -> [IR.Named Type]
 ir =
@@ -37,7 +38,7 @@ ir =
     . runBuild
     . (unpack <=< closeOver)
   where
-    unpack = const $ gets $ reverse . definitions
+    unpack = Functor.const $ gets $ reverse . definitions
     closeOver [] = return ()
     closeOver (c@(Rush.Named n e) : cs) = do
       ty <- closeOverConstant c
@@ -104,6 +105,7 @@ generate cs =
     generate' (IR.Named name c) =
       IR.Named name <$> case c of
         IR.CNum {} -> pure c
+        IR.CData {} -> pure c
         IR.CType {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
@@ -141,7 +143,7 @@ monomorphize locals e = case e of
   Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
   Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
-  Data (c, ty) -> pure $ Data (c, ty)
+  Data c ty xs -> Data c ty <$> mapM (monomorphize locals) xs
   EType (n, k) (c, ty) -> pure $ EType (n, k) (c, ty)
 
 monomorphizeBinOp locals op a b = op <$> monomorphize locals a <*> monomorphize locals b
@@ -185,7 +187,7 @@ init = \case
   Rush.TTup tys -> TTup <$> mapM init tys
   Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v s
-  Rush.TData (c, s) -> pure $ TData (c, s)
+  Rush.TData c s ts -> TData c s <$> mapM (\(c, s, ts) -> (c,s,) <$> mapM init ts) ts
   a Rush.:-> b -> do
     ta <- init a
     tb <- init b
@@ -199,7 +201,11 @@ closeOverConstant (Rush.Named name c) = ty'
     ty' = (typeOf <$>) . define name =<< c'
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
-      Rush.CType (n, kind) (c, ty) -> IR.CType <$> ((n,) <$> init kind) <*> ((c,) <$> init ty)
+      Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((const <$>) . closeOverExpr c . Rush.unConst) xs
+      Rush.CType (n, kind) (c, ty) ts ->
+        IR.CType
+          <$> ((n,) <$> init kind)
+          <*> ((c,) <$> init ty)
       Rush.CLambda (x, tx) b -> do
         tf <- TFn TUnit <$> init tx <*> init (Rush.typeOf b)
         let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
@@ -261,7 +267,7 @@ closeOverExpr parent e = case e of
           mapM_ (ensure . (ty' :~) . typeOf) xs'
           pure $ List ty' xs'
         Rush.Cons h t -> Cons <$> closeOverPattern h <*> closeOverPattern t
-        Rush.Data (n, ty) -> Data . (n,) <$> init ty
+        Rush.Data n ty xs -> Data n <$> init ty <*> mapM closeOverPattern xs
         _ -> error "unreachable"
   Rush.Lambda (x, tx) b -> mdo
     let name = "_cls_" <> parent
@@ -288,14 +294,14 @@ closeOverExpr parent e = case e of
     ensure $ typeOf x' :~ tx'
     ensure . (ty' :~) =<< init ty
     return $ App ty' f' x'
-  Rush.Data (c, ty) -> Data . (c,) <$> init ty
-  Rush.Type (n, k) (c, ty) -> EType <$> ((n,) <$> init k) <*> ((c,) <$> init ty)
+  Rush.Data c ty xs -> Data c <$> init ty <*> mapM (closeOverExpr parent) xs
 
 captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))
 captures bound =
   let unionMany = foldr Map.union Map.empty
    in \case
         Rush.Num {} -> return Map.empty
+        -- XXX: This is wrong.
         Rush.Var x (_ Rush.:-> _) -> return Map.empty
         Rush.Var x tx -> do
           if x `Set.member` bound
@@ -312,7 +318,7 @@ captures bound =
         Rush.Tup xs -> unionMany <$> mapM (captures bound) xs
         Rush.List _ xs -> unionMany <$> mapM (captures bound) xs
         Rush.Cons h t -> Map.union <$> captures bound h <*> captures bound t
-        Rush.Data (_, _) -> pure Map.empty
+        Rush.Data _ _ xs -> unionMany <$> mapM (captures bound) xs
         Rush.Match xs ps -> Map.union <$> bxs <*> bps
           where
             bxs = unionMany <$> mapM (captures bound) xs
@@ -321,7 +327,6 @@ captures bound =
               Map.filterWithKey
                 (curry $ not . (`Set.member` foldr (Set.union . bindings) Set.empty ps) . fst)
             bindings = Set.fromList . (fst <$>) . Rush.bindings
-        Rush.Type (_, _) (_, _) -> pure Map.empty
 
 bindings :: Expr b -> Set.Set Text
 bindings = Set.fromList . (fst <$>) . typedBindings
@@ -333,7 +338,7 @@ typedBindings = \case
   Tup ps -> typedBindings =<< ps
   List _ ps -> typedBindings =<< ps
   Cons h t -> typedBindings h ++ typedBindings t
-  Data (_, _) -> []
+  Data _ _ ps -> typedBindings =<< ps
   _ -> error "unreachable"
 
 freshName :: Build Text

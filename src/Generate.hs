@@ -2,7 +2,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecursiveDo #-}
-{-# HLINT ignore "Use lambda-case" #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
@@ -35,7 +34,7 @@ import LLVM.AST.Visibility
 import LLVM.IRBuilder hiding (buildModule, fresh)
 import LLVM.Prelude hiding (EQ, lookup, null)
 import LLVM.Pretty (ppll)
-import Parser (emptySpan)
+import Span
 import Test.Hspec
 import Prelude hiding (EQ, lookup, null)
 
@@ -85,6 +84,11 @@ buildItem item@(Rush.Named name constant) =
           <*> asValue (Rush.typeOf b)
           <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkRet (Rush.typeOf b) =<< buildExpr b)
       Rush.CType (n, k) (c, ty) -> pure ()
+      Rush.CData _ ty [] ->
+        define name
+          =<< global (fromText name)
+          <$> asStorage ty
+          <*> pure (Struct Nothing False [])
       e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 buildExpr ::
@@ -103,12 +107,20 @@ buildExpr e = do
     Rush.Div a b -> buildBinOp udiv a b
     Rush.Mod a b -> buildBinOp urem a b
     Rush.Tup xs -> do
-      t <- (\ty -> alloca ty Nothing 0) =<< asValue (Rush.typeOf e)
+      t <- (\ty -> alloca ty Nothing 0) =<< asStorage (Rush.typeOf e)
       xs' <- mapM buildExpr xs
       forM_
         (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
         (\(i, x, tx) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
       pure t
+    Rush.Data c ty [] -> pure $ struct Nothing False []
+    Rush.Data c ty xs -> do
+      s <- (\ty -> alloca ty Nothing 0) =<< asStorage ty
+      xs' <- mapM buildExpr xs
+      forM_
+        (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
+        (\(i, x, tx) -> join $ store <$> gep s [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
+      pure s
     Rush.List tx xs -> case xs of
       [] -> inttoptr (int64 0) . asPtr =<< listType tx
       x : xs -> do
@@ -174,7 +186,6 @@ buildExpr e = do
       store disc' 0 $ fromJust $ Map.lookup disc (Map.fromList (zip (Map.keys tcs) (int32 <$> [0 ..])))
       store closure 0 =<< mkVal (Rush.typeOf val) =<< buildExpr val
       pure unionStorage
-    Rush.Data (c, ty) -> pure $ struct Nothing False []
     e -> error $ "unreachable: " ++ show e
 
 buildMatchArms ::
@@ -238,8 +249,14 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
         t' <- gep node [int32 0, int32 1]
         with [(h, h'), (t, t')] $
           buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
-      Rush.Data {} -> buildMatchArm returnBlock nextBlock xs ps e
-      _ -> error "unreachable"
+      Rush.Data _ _ fs -> case fs of
+        [] -> buildMatchArm returnBlock nextBlock xs ps e
+        _ -> do
+          x' <- mkRef =<< lookup x
+          xs' <- mapM (const fresh) fs
+          xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] fs)
+          with (zip xs' xs'') $ buildMatchArm returnBlock nextBlock (xs' ++ xs) (fs ++ ps) e
+      ty -> error $ "unreachable: " ++ show ty
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
 callUnionClosure ::
@@ -299,7 +316,7 @@ asStorage = \case
   Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType 8 i64]
   Rush.TFn c@Rush.TUnion {} a b -> asValue c
   Rush.TFn c@Rush.TStruct {} a b -> asValue c
-  Rush.TData (_, _) -> pure $ StructureType False []
+  Rush.TData _ _ [(_, _, ts)] -> StructureType False <$> mapM asField ts
   ty -> error $ "unreachable: " ++ show ty
 
 asField :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
@@ -349,6 +366,7 @@ passedByValue = \case
   Rush.TTup {} -> False
   Rush.TStruct {} -> False
   Rush.TClosure {} -> False
+  Rush.TData {} -> False
   _ -> True
 
 parseInt :: Text -> Operand

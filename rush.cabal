@@ -33,6 +33,7 @@ library
       Lib
       Monomorphize
       Parser
+      Span
       Type
   other-modules:
       Paths_rush

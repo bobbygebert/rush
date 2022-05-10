@@ -262,3 +262,15 @@ spec = describe "rush build" $ do
       decl ["int64_t f(int64_t);"]
     o <- evalInt r d "f(1)"
     o `shouldBe` "1"
+
+  it "builds non-inductive/monomorphic product types" $ do
+    r <-
+      rush
+        [ "IntPair = IntPair Int Int",
+          "sum (IntPair x y) = x + y",
+          "f x = sum (IntPair x x)"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(2)"
+    o `shouldBe` "4"
