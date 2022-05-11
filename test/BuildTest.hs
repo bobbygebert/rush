@@ -288,3 +288,20 @@ spec = describe "rush build" $ do
       decl ["int64_t f(int64_t);"]
     o <- evalInt r d "f(0) + f(3)"
     o `shouldBe` "5"
+
+  it "builds inductive/monomorphic types" $ do
+    r <-
+      rush
+        [ "Nat = Z | S Nat",
+          "sum Z x = x",
+          "sum (S n) x = S (sum n x)",
+          "nat 0 = Z",
+          "nat n = S (nat (n - 1))",
+          "int Z = 0",
+          "int (S n) = 1 + int n",
+          "f x = int (sum (nat x) (nat x))"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(2)"
+    o `shouldBe` "4"

@@ -3,7 +3,10 @@ module Span where
 import Text.Megaparsec (SourcePos (SourcePos), mkPos)
 
 data Span = Span SourcePos SourcePos
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
+
+instance Show Span where
+  show = const "_"
 
 emptySpan :: Span
 emptySpan =

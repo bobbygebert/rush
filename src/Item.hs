@@ -35,15 +35,20 @@ data Constructor s = Constructor Text s [Type]
   deriving (Eq, Foldable, Functor)
 
 instance Show (Constructor s) where
-  show (Constructor n _ ts) = unwords (unpack n : (show <$> ts))
+  show (Constructor n _ ts) = unwords (unpack n : (("(" ++) . (++ ")") . show <$> ts))
 
 desugar :: Ast.Ast Span -> Item Span
 desugar = \case
   Ast.Constant (n, s) e -> Item n s (Expr e)
   Ast.Fn (n, s) arms -> Item n s (Expr $ desugarFnArms arms)
-  Ast.Type (n, s1) cs -> Item n s1 (Type (n, s1) (desugar' <$> cs))
+  Ast.Type (n, s1) cs -> Item n s1 (Type (n, s1) (desugar' . substituteSelf <$> cs))
     where
       desugar' (c, s2, ts) = Constructor c s2 ts
+      substituteSelf (c, s, ts) = (c, s, substituteSelf' <$> ts)
+      substituteSelf' ty@(TData n' s _)
+        | n' == n = TRef n s
+        | otherwise = ty
+      substituteSelf' ty = ty
 
 desugarFnArms :: [([Expr c], Expr c)] -> Expr c
 desugarFnArms (arm@(ps, _) : arms) = close args
@@ -112,7 +117,7 @@ typeItem context (Item.Item n s i) =
             return $ Item.Item n (Kind s1) (Item.Type (t, Kind s1) cs')
 
 typeExpr :: Expr Span -> Infer Type (Expr Type)
-typeExpr e = trace ("typing expr: " ++ show e) $ case e of
+typeExpr e = case e of
   Num n c -> pure $ Num n (TInt c)
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> typeBinOp Add a b

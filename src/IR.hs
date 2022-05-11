@@ -21,6 +21,7 @@ data Constant t
   = CNum Text t
   | CData Text t [Constant t]
   | CFn t (Text, t) (Expr t)
+  | CType Text t [(Text, t, [Type])]
   deriving (Eq, Functor, Foldable)
 
 instance (Show t) => Show (Constant t) where
@@ -28,6 +29,7 @@ instance (Show t) => Show (Constant t) where
     CNum n _ -> unpack n
     CData n ty xs -> show $ Data n ty (unConst <$> xs)
     CFn tc (x, tx) b -> show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
+    CType n _ _ -> unpack n
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -37,6 +39,7 @@ data Type
   | TTup [Type]
   | TList Type
   | TData Text Span [(Text, Span, [Type])]
+  | TRef Text Span
   | TVar Text Span
   | TStruct (Map.Map Text Type)
   | TUnion (Map.Map Text Type)
@@ -45,6 +48,9 @@ data Type
   | TFn Type Type Type
   | Kind
   deriving (Eq, Ord)
+
+instance Show Type where
+  show = renderStyle (style {lineLength = 100000}) . tdoc
 
 data Expr t
   = Num Text t
@@ -64,11 +70,11 @@ data Expr t
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | Union (Map.Map Text Type) Text (Expr t)
   | App t (Expr t) (Expr t)
-  | EType (Text, t) (Text, t)
+  | EType Text
   deriving (Eq, Functor, Foldable, Traversable)
 
-instance Show Type where
-  show = renderStyle (style {lineLength = 100000}) . tdoc
+instance (Show t) => Show (Expr t) where
+  show = renderStyle (style {lineLength = 100000}) . vdoc
 
 tdoc = \case
   TInt {} -> text "Int"
@@ -77,6 +83,7 @@ tdoc = \case
   TList tx -> brackets $ tdoc tx
   TVar v _ -> text "'" <> text (unpack v)
   TData n _ _ -> text $ unpack n
+  TRef n _ -> text $ unpack n
   TStruct fields -> braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
     where
       showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
@@ -86,9 +93,6 @@ tdoc = \case
   TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
   TClosure f cs tf -> parens $ tdoc (TStruct cs) <+> text (unpack f) <> colon <+> tdoc tf
   Kind -> "*"
-
-instance (Show t) => Show (Expr t) where
-  show = renderStyle (style {lineLength = 100000}) . vdoc
 
 vdoc :: (Show t) => Expr t -> Doc
 vdoc = \case
@@ -128,7 +132,7 @@ vdoc = \case
       showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
   Union ty disc val -> text (show ty) <> "." <> text (unpack disc) <> "@" <> vdoc val
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
-  EType (n, _) (_, _) -> text $ unpack n
+  EType n -> text $ unpack n
 
 showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
 
@@ -146,6 +150,7 @@ instance Template Type where
     TUnion tys -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems tys)
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
     TData _ _ _ -> Set.empty
+    TRef _ _ -> Set.empty
     Kind -> Set.empty
 
   instantiate ty = do
@@ -163,6 +168,7 @@ instance Template Type where
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
       TData n s cs -> TData n s cs
+      TRef n s -> TRef n s
       Kind -> Kind
 
 instance Refine Type Type where
@@ -177,6 +183,7 @@ instance Refine Type Type where
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
     TData n s cs -> TData n s cs
+    TRef n s -> TRef n s
     Kind -> Kind
 
 instance Unify Type where
@@ -205,6 +212,8 @@ instance Unify Type where
           toStruct _ = error "unreachable"
           toFn tc (TClosure _ _ (TFn _ tx tb)) = TFn tc tx tb
           toFn _ _ = error "unreachable"
+      usubs t1@TRef {} t2@TData {} = usubs t2 t1
+      usubs (TData n _ _) (TRef n' _) | n == n' = return $ Substitutions Map.empty
       usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
   isVar v (TVar tv _) = v == tv
@@ -215,6 +224,7 @@ unConst = \case
   CFn tc x b -> Fn tc x b
   CData c ty xs -> Data c ty (unConst <$> xs)
   CNum n ty -> Num n ty
+  CType n _ _ -> EType n
 
 const :: Expr t -> Constant t
 const = \case
@@ -243,7 +253,7 @@ typeOf = \case
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   Union ty disc val -> TUnion ty
   App ty f x -> ty
-  EType (_, k) _ -> k
+  EType _ -> Kind
 
 -- TODO: Merge Spans
 spanOf :: Type -> Span
@@ -258,6 +268,7 @@ spanOf = \case
   TFn _ a b -> spanOf a
   TUnit -> emptySpan
   TData _ s _ -> s
+  TRef _ s -> s
   Kind -> emptySpan
 
 withSpan :: Span -> Type -> Type
@@ -272,4 +283,5 @@ withSpan s = \case
   TFn cls a b -> TFn (withSpan s cls) (withSpan s a) (withSpan s b)
   TUnit -> TUnit
   TData n _ cs -> TData n s ((\(c, ty, tys) -> (c, s, withSpan s <$> tys)) <$> cs)
+  TRef n _ -> TRef n s
   Kind -> Kind

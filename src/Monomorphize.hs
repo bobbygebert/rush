@@ -23,6 +23,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import Data.Text hiding (concatMap, filter, foldr, head, init, partition, reverse, tail, unlines, zip)
 import qualified Data.Text.Internal.Fusion.Size as Map
+import Debug.Trace
 import qualified Eval as Rush
 import qualified Expression as Rush
 import IR
@@ -33,7 +34,9 @@ import Prelude hiding (const, init, lookup)
 
 ir :: [Rush.Named Rush.Type] -> [IR.Named Type]
 ir =
-  generate
+  (\a -> trace ("generated: \n" ++ unlines (show <$> a)) a)
+    . generate
+    . (\a -> trace ("built: \n" ++ unlines (show <$> a)) a)
     . solve
     . runBuild
     . (unpack <=< closeOver)
@@ -107,6 +110,7 @@ generate cs =
         IR.CNum {} -> pure c
         IR.CData {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
+        IR.CType n s cs -> pure $ IR.CType n s cs
     noLocals = Set.empty
     types = Map.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
     (templates, targets) =
@@ -143,7 +147,7 @@ monomorphize locals e = case e of
   Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
   Data c ty xs -> Data c ty <$> mapM (monomorphize locals) xs
-  EType (n, k) (c, ty) -> pure $ EType (n, k) (c, ty)
+  EType n -> pure $ EType n
 
 monomorphizeBinOp locals op a b = op <$> monomorphize locals a <*> monomorphize locals b
 
@@ -187,6 +191,7 @@ init = \case
   Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v s
   Rush.TData c s ts -> TData c s <$> mapM (\(c, s, ts) -> (c,s,) <$> mapM init ts) ts
+  Rush.TRef n s -> pure $ TRef n s
   a Rush.:-> b -> do
     ta <- init a
     tb <- init b
@@ -206,7 +211,10 @@ closeOverConstant (Rush.Named name c) = ty'
         let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
         b' <- with [(name, tf), (x, tx)] $ closeOverExpr name b
         return $ IR.CFn TUnit (x, tx) b'
-      Rush.CType (n, kind) cs -> error "unreachable"
+      Rush.CType (n, kind) cs ->
+        CType n
+          <$> init kind
+          <*> forM cs (\(c, t, ts) -> (c,,) <$> init t <*> mapM init ts)
 
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
@@ -269,13 +277,15 @@ closeOverExpr parent e = case e of
     let name = "_cls_" <> parent
     tx' <- init tx
     cs <- captures (Set.singleton x) b
-    b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr name b
     tc <-
       return $
         if Map.size cs == 0
           then TUnit
           else TStruct (Map.map typeOf cs)
     f <- define name $ IR.CFn tc (x, tx') b'
+    b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr name b
+    tp <- TFn <$> freshVar emptySpan <*> freshVar emptySpan <*> pure (TFn tc tx' (typeOf b'))
+    lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
     return $ case tc of
       TUnit -> f

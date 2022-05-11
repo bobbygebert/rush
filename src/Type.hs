@@ -23,6 +23,7 @@ data Type
   | TList Type
   | TVar Text Span
   | TData Text Span [(Text, Span, [Type])]
+  | TRef Text Span
   | Type :-> Type
   | Kind Span
   deriving (Eq)
@@ -34,6 +35,7 @@ instance Show Type where
     TList tx -> "[" ++ show tx ++ "]"
     TVar txt _ -> "'" ++ unpack txt
     TData n _ _ -> unpack n
+    TRef n _ -> unpack n
     a :-> b -> show a ++ " -> " ++ show b
     Kind {} -> "*"
 
@@ -47,6 +49,7 @@ spanOf = \case
   TList tx -> spanOf tx
   TVar _ s -> s
   TData _ s _ -> s
+  TRef _ s -> s
   a :-> b -> spanOf a
   Kind s -> s
 
@@ -57,6 +60,7 @@ withSpan s = \case
   TList tx -> TList $ withSpan s tx
   TVar v _ -> TVar v s
   TData n _ cs -> TData n s $ (\(c, _, ts) -> (c, s, withSpan s <$> ts)) <$> cs
+  TRef n _ -> TRef n s
   a :-> b -> withSpan s a :-> withSpan s b
   Kind _ -> Kind s
 
@@ -66,6 +70,7 @@ instance Refine Type Type where
   apply ss (TTup tys) = TTup $ apply ss <$> tys
   apply ss (TList tx) = TList $ apply ss tx
   apply _ t@TData {} = t
+  apply _ t@TRef {} = t
   apply _ t@TInt {} = t
   apply _ t@Kind {} = t
 
@@ -76,6 +81,8 @@ instance Unify Type where
   unifyingSubstitutions (TVar v _) t = v `bind` t
   unifyingSubstitutions t (TVar v _) = v `bind` t
   unifyingSubstitutions (t1 :-> t2) (t3 :-> t4) = unifyMany [t1, t2] [t3, t4]
+  unifyingSubstitutions t1@TRef {} t2@TData {} = unifyingSubstitutions t2 t1
+  unifyingSubstitutions (TData n _ _) (TRef n' _) | n == n' = return $ Substitutions Map.empty
   unifyingSubstitutions t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
   isVar v (TVar tv _) = v == tv
@@ -87,6 +94,7 @@ instance Template Type where
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TList tx -> freeTypeVars tx
     TData _ _ _ -> Set.empty
+    TRef _ _ -> Set.empty
     a :-> b -> freeTypeVars a `Set.union` freeTypeVars b
     TVar v _ -> Set.singleton v
     Kind _ -> Set.empty
@@ -100,6 +108,7 @@ instance Template Type where
       TTup tys -> TTup $ apply s <$> tys
       TList tx -> TList $ apply s tx
       TData n sp cs -> TData n sp $ (\(c, sp, ts) -> (c, sp, apply s <$> ts)) <$> cs
+      TRef {} -> ty
       TVar {} -> ty
       a :-> b -> apply s a :-> apply s b
       Kind s -> Kind s

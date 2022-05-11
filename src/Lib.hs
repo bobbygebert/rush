@@ -41,9 +41,7 @@ reduce = reduce' emptyContext
     reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name ty term) : is -> case ty of
-        Kind _ -> reduce' ctx' is
-        _ -> Named name c : reduce' ctx' is
+      (Item name ty term) : is -> Named name c : reduce' ctx' is
         where
           c = case term of
             Item.Expr e -> eval ctx e
