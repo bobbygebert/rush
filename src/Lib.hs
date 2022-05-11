@@ -41,11 +41,15 @@ reduce = reduce' emptyContext
     reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name ty term) : is -> Named name c : reduce' ctx' is
+      (Item name ty term) : is -> case ty of
+        Kind _ -> reduce' ctx' is
+        _ -> Named name c : reduce' ctx' is
         where
           c = case term of
             Item.Expr e -> eval ctx e
-            Item.Type (n, k) (Item.Constructor c t ts) -> CType (n, k) (c, t) ts
+            Item.Type (n, k) cs -> CType (n, k) cs'
+              where
+                cs' = (\(Item.Constructor c t ts) -> (c, t, ts)) <$> cs
           ctx' = Context (Map.insert name c (defs ctx))
 
 inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
@@ -57,7 +61,7 @@ inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' primitives
       Right item' -> do
         let tys = Map.fromList $ case value item' of
               Item.Expr e -> trace ("defining: " ++ show (name item', ty item', value item')) [(name item', ty item')]
-              Item.Type (n, k) (Item.Constructor c ty _) -> trace ("defining: " ++ show (c, ty)) []
+              Item.Type (n, k) cs -> trace ("defining: " ++ unpack n ++ "\n" ++ unlines (show <$> cs)) []
         let context' =
               Context $
                 Map.union (trace (unlines $ ("definining: " ++) . show <$> Map.toList (constructorTypes item)) constructorTypes item) $

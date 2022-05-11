@@ -106,7 +106,6 @@ generate cs =
       IR.Named name <$> case c of
         IR.CNum {} -> pure c
         IR.CData {} -> pure c
-        IR.CType {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
     types = Map.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
@@ -202,15 +201,12 @@ closeOverConstant (Rush.Named name c) = ty'
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
       Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((const <$>) . closeOverExpr c . Rush.unConst) xs
-      Rush.CType (n, kind) (c, ty) ts ->
-        IR.CType
-          <$> ((n,) <$> init kind)
-          <*> ((c,) <$> init ty)
       Rush.CLambda (x, tx) b -> do
         tf <- TFn TUnit <$> init tx <*> init (Rush.typeOf b)
         let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
         b' <- with [(name, tf), (x, tx)] $ closeOverExpr name b
         return $ IR.CFn TUnit (x, tx) b'
+      Rush.CType (n, kind) cs -> error "unreachable"
 
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of

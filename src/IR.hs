@@ -21,7 +21,6 @@ data Constant t
   = CNum Text t
   | CData Text t [Constant t]
   | CFn t (Text, t) (Expr t)
-  | CType (Text, t) (Text, t)
   deriving (Eq, Functor, Foldable)
 
 instance (Show t) => Show (Constant t) where
@@ -29,7 +28,6 @@ instance (Show t) => Show (Constant t) where
     CNum n _ -> unpack n
     CData n ty xs -> show $ Data n ty (unConst <$> xs)
     CFn tc (x, tx) b -> show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
-    CType (n, _) _ -> unpack n
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -164,7 +162,7 @@ instance Template Type where
       TUnion tys -> TStruct $ Map.map (apply s) tys
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
-      TData n s ts -> TData n s ts
+      TData n s cs -> TData n s cs
       Kind -> Kind
 
 instance Refine Type Type where
@@ -178,7 +176,7 @@ instance Refine Type Type where
     TUnion tys -> TUnion $ apply ss <$> tys
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
-    TData n s ts -> TData n s ts
+    TData n s cs -> TData n s cs
     Kind -> Kind
 
 instance Unify Type where
@@ -217,14 +215,12 @@ unConst = \case
   CFn tc x b -> Fn tc x b
   CData c ty xs -> Data c ty (unConst <$> xs)
   CNum n ty -> Num n ty
-  CType (n, kind) (c, ty) -> EType (n, kind) (c, ty)
 
 const :: Expr t -> Constant t
 const = \case
   Fn tc x b -> CFn tc x b
   Data c ty xs -> CData c ty (const <$> xs)
   Num n ty -> CNum n ty
-  EType (n, kind) (c, ty) -> CType (n, kind) (c, ty)
   _ -> error "unreachable"
 
 typeOf :: Expr Type -> Type
@@ -275,5 +271,5 @@ withSpan s = \case
   TClosure f c tf -> TClosure f (Map.map (withSpan s) c) (withSpan s tf)
   TFn cls a b -> TFn (withSpan s cls) (withSpan s a) (withSpan s b)
   TUnit -> TUnit
-  TData n _ ts -> TData n s $ (\(c, _, ts) -> (c, s, withSpan s <$> ts)) <$> ts
+  TData n _ cs -> TData n s ((\(c, ty, tys) -> (c, s, withSpan s <$> tys)) <$> cs)
   Kind -> Kind

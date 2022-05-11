@@ -53,8 +53,10 @@ fn = do
       (,) <$> pats <*> (eq *> expr)
 
 typeDef :: Parser (Ast.Ast Span)
-typeDef = Ast.Type <$> (spanned upperIdent <* eq) <*> spanned upperIdent <*> many (hspace *> atom)
+typeDef = Ast.Type <$> (spanned upperIdent <* eq) <*> (constructor `sepBy1` sep)
   where
+    constructor = uncurry (,,) <$> spanned (upperIdent <* hspace) <*> (atom `sepBy` hspace)
+    sep = (hspace *> char '|') *> hspace
     atom = tInt <|> tag
     tInt = TInt . snd <$> spanned (string "Int")
     tag = uncurry TData <$> spanned upperIdent <*> pure []
@@ -271,14 +273,21 @@ typeSpec = do
       "marker type"
       "Marker = Marker"
       as
-      (Ast.Type ("Marker", ()) ("Marker", ()) [])
+      (Ast.Type ("Marker", ()) [("Marker", (), [])])
 
   item <* eof
     & parses
       "monomorphic product types"
       "Pair = Pair Int Int"
       as
-      (Ast.Type ("Pair", ()) ("Pair", ()) [TInt emptySpan, TInt emptySpan])
+      (Ast.Type ("Pair", ()) [("Pair", (), [TInt emptySpan, TInt emptySpan])])
+
+  item <* eof
+    & parses
+      "monomorphic sum types"
+      "MaybeInt = Nothing | Just Int"
+      as
+      (Ast.Type ("MaybeInt", ()) [("Nothing", (), []), ("Just", (), [TInt emptySpan])])
 
 lowerIdentSpec =
   Hspec.it
@@ -297,7 +306,9 @@ instance Plain Ast.Ast where
   plain = \case
     Ast.Constant (x, _) a -> Ast.Constant (x, ()) (plain a)
     Ast.Fn (f, _) arms -> Ast.Fn (f, ()) $ bimap (plain <$>) plain <$> arms
-    Ast.Type (n, _) (c, _) ts -> Ast.Type (n, ()) (c, ()) $ withSpan emptySpan <$> ts
+    Ast.Type (n, _) cs -> Ast.Type (n, ()) (plain' <$> cs)
+      where
+        plain' (c, _, ts) = (c, (), withSpan emptySpan <$> ts)
 
 instance Plain Expr where
   plain = void

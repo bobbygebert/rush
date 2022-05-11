@@ -7,6 +7,7 @@ module Item (Constructor (..), Term (..), Item (..), desugar, typeItem, construc
 
 import qualified Ast
 import Control.Monad
+import Data.Functor
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, span, unlines, unwords, zip)
@@ -22,7 +23,7 @@ import Prelude hiding (lookup, span)
 data Item s = Item {name :: Text, ty :: s, value :: Term s}
   deriving (Show, Eq, Foldable, Functor)
 
-data Term s = Expr (Expr s) | Type (Text, s) (Constructor s)
+data Term s = Expr (Expr s) | Type (Text, s) [Constructor s]
   deriving (Eq, Foldable, Functor)
 
 instance (Show s) => Show (Term s) where
@@ -40,7 +41,9 @@ desugar :: Ast.Ast Span -> Item Span
 desugar = \case
   Ast.Constant (n, s) e -> Item n s (Expr e)
   Ast.Fn (n, s) arms -> Item n s (Expr $ desugarFnArms arms)
-  Ast.Type (n, s1) (c, s2) ts -> Item n s1 (Type (c, s1) (Constructor c s2 ts))
+  Ast.Type (n, s1) cs -> Item n s1 (Type (n, s1) (desugar' <$> cs))
+    where
+      desugar' (c, s2, ts) = Constructor c s2 ts
 
 desugarFnArms :: [([Expr c], Expr c)] -> Expr c
 desugarFnArms (arm@(ps, _) : arms) = close args
@@ -62,20 +65,28 @@ desugarFnArms _ = error "unreachable"
 constructors :: Item Span -> [Item Type]
 constructors (Item _ _ term) = case term of
   Expr {} -> []
-  Type (ty, sty) (Constructor c sc ts) -> [Item c cty expr]
+  Type (ty, sty) cs -> constructor <$> cs
     where
-      cty :: Type
-      cty = foldr (:->) dty ts
-      dty = TData ty sc [(c, sc, ts)]
-      args = uncurry Var <$> zip freshNames ts
-      expr = Expr $ case args of
+      cs' = (\(Constructor c s ts) -> (c, s, ts)) <$> cs
+      constructor (Constructor c sc ts) = Item c cty . Expr $ case args of
         [] -> Data c dty args
         args -> desugarFnArms [(args, Data c dty args)]
+        where
+          cty = foldr (:->) dty ts
+          dty = TData ty sc cs'
+          args = uncurry Var <$> zip freshNames ts
+          expr = Expr $ case args of
+            [] -> Data c dty args
+            args -> desugarFnArms [(args, Data c dty args)]
 
 constructorTypes :: Item Span -> Map.Map Text Type
 constructorTypes (Item _ _ term) = case term of
   Expr {} -> Map.empty
-  Type (ty, sty) (Constructor c sc ts) -> Map.singleton c (foldr (:->) (TData ty sc [(c, sc, ts)]) ts)
+  Type (ty, sty) cs -> Map.fromList (constructorType <$> cs)
+    where
+      cs' = (\(Constructor c s ts) -> (c, s, ts)) <$> cs
+      constructorType (Constructor c sc ts) =
+        (c, foldr (:->) (TData ty sc cs') ts)
 
 freshNames :: [Text]
 freshNames = pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
@@ -88,19 +99,20 @@ typeItem context (Item.Item n s i) =
         where
           tvs = Set.toList (freeTypeVars ty)
           ss = Map.fromList $ zip tvs (freshTypeVars <*> repeat (spanOf ty))
-   in (normalize <$>) . solve <=< infer $ do
+   in (\x -> trace ("typed: " ++ show x) x) . (normalize <$>) . solve <=< infer $ do
         case i of
           Item.Expr e -> do
             ty <- fresh s
             e' <- with [(n, ty)] $ typeExpr e
             ensure (ty :~ typeOf e')
             return . Item.Item n ty . Item.Expr $ e'
-          Item.Type (t, s2) (Item.Constructor c s3 ts) -> do
-            let ty = TData n s2 [(c, s3, ts)]
-            return $ Item.Item n (Kind s1) (Item.Type (t, Kind s1) (Item.Constructor c ty ts))
+          Item.Type (t, s2) cs -> do
+            let ty = TData n s2 (cs <&> (\(Item.Constructor c s3 ts) -> (c, s3, ts)))
+            let cs' = cs <&> (\(Item.Constructor c _ ts) -> Item.Constructor c ty ts)
+            return $ Item.Item n (Kind s1) (Item.Type (t, Kind s1) cs')
 
 typeExpr :: Expr Span -> Infer Type (Expr Type)
-typeExpr = \case
+typeExpr e = trace ("typing expr: " ++ show e) $ case e of
   Num n c -> pure $ Num n (TInt c)
   Var v c -> Var v . withSpan c <$> lookup v
   Add a b -> typeBinOp Add a b
@@ -128,7 +140,7 @@ typeExpr = \case
     bs' <- mapM match arms
     let tps = fmap typeOf . fst <$> bs'
     let txs = typeOf <$> xs'
-    mapM_ (mapM_ (ensure . uncurry (:~))) (zip txs <$> tps)
+    mapM_ (mapM_ (ensure . uncurry (:~))) (trace (show (zip txs <$> tps, bs')) (zip txs <$> tps))
     return $ Match xs' bs'
     where
       match (ps, b) = do
@@ -159,8 +171,14 @@ typePattern = \case
       pure p'
     pure $ List ty ps'
   Cons h t -> Cons <$> typePattern h <*> typePattern t
-  Data c s xs -> Data c <$> (rt <$> lookup c) <*> mapM typePattern xs
+  Data c s xs -> do
+    tc' <- lookup c
+    xs' <- mapM typePattern xs
+    mapM_ (ensure . uncurry (:~)) (zip (typeOf <$> xs') (txs tc'))
+    pure $ Data c (rt tc') xs'
     where
+      txs (a :-> b) = a : txs b
+      txs ty = []
       rt (a :-> b) = rt b
       rt ty = ty
   _ -> error "unreachable"

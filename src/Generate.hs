@@ -16,7 +16,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import Data.String
-import Data.Text hiding (filter, foldr, head, length, null, tail, unlines, zip)
+import Data.Text hiding (filter, foldr, head, length, null, replicate, tail, take, unlines, zip)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
 import qualified IR as Rush
@@ -83,12 +83,20 @@ buildItem item@(Rush.Named name constant) =
           <$> (asArg tx <&> (: []) . (,fromText x))
           <*> asValue (Rush.typeOf b)
           <*> pure (\[x'] -> with [(x, x')] $ ret =<< mkRet (Rush.typeOf b) =<< buildExpr b)
-      Rush.CType (n, k) (c, ty) -> pure ()
-      Rush.CData _ ty [] ->
+      Rush.CData _ ty@(Rush.TData n _ cs) [] -> do
+        let disc = fromJust . Map.lookup name $ Map.fromList (zip ((\(c, _, _) -> c) <$> cs) [0 ..])
+        let storageSize = sizeInWords ty - 1
+        let storage = case cs of
+              [_] -> Struct Nothing False []
+              _ ->
+                Struct
+                  Nothing
+                  False
+                  [Int 32 disc, Array i64 $ replicate storageSize (Int 64 0)]
         define name
           =<< global (fromText name)
           <$> asStorage ty
-          <*> pure (Struct Nothing False [])
+          <*> pure storage
       e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 buildExpr ::
@@ -113,14 +121,27 @@ buildExpr e = do
         (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
         (\(i, x, tx) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
       pure t
-    Rush.Data c ty [] -> pure $ struct Nothing False []
-    Rush.Data c ty xs -> do
-      s <- (\ty -> alloca ty Nothing 0) =<< asStorage ty
+    Rush.Data c ty@(Rush.TData _ _ cs) xs -> do
+      let disc = fromJust . Map.lookup c $ Map.fromList (zip ((\(c, _, _) -> c) <$> cs) [0 ..])
+      let storageSize = sizeInWords ty - 1
+      struct <- (\ty -> alloca ty Nothing 0) =<< asStorage ty
+      discStorage <- case cs of
+        [_] -> pure struct
+        _ -> gep struct [int32 0, int32 0]
+      dataStorage <- case cs of
+        [_] -> pure struct
+        _ -> do
+          store discStorage 0 (int32 disc)
+          gep struct [int32 0, int32 1]
       xs' <- mapM buildExpr xs
       forM_
         (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
-        (\(i, x, tx) -> join $ store <$> gep s [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
-      pure s
+        ( \(i, x, tx) ->
+            join $
+              store
+                <$> gep dataStorage [int32 0, int32 i] <*> pure 0 <*> mkVal tx x
+        )
+      pure struct
     Rush.List tx xs -> case xs of
       [] -> inttoptr (int64 0) . asPtr =<< listType tx
       x : xs -> do
@@ -198,13 +219,13 @@ buildMatchArms ::
 buildMatchArms _ _ tried [] = do
   panic
   return tried
-buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
+buildMatchArms returnBlock xs tried ((ps, b) : arms) = trace (show $ (ps, b) : arms) $ mdo
   thisBranch <- buildMatchArm returnBlock nextBlock xs ps b
   nextBlock <- block
   buildMatchArms returnBlock xs (thisBranch : tried) arms
   where
     buildMatchArm returnBlock _ [] [] e = do
-      result <- buildExpr e
+      result <- mkVal (Rush.typeOf e) =<< buildExpr e
       br returnBlock
       (result,) <$> currentBlock
     buildMatchArm returnBlock nextBlock (x : xs) (p : ps) e = case p of
@@ -249,13 +270,27 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
         t' <- gep node [int32 0, int32 1]
         with [(h, h'), (t, t')] $
           buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
-      Rush.Data _ _ fs -> case fs of
-        [] -> buildMatchArm returnBlock nextBlock xs ps e
-        _ -> do
-          x' <- mkRef =<< lookup x
-          xs' <- mapM (const fresh) fs
-          xs'' <- mapM (\(i, p') -> gep x' [int32 0, int32 i]) (zip [0 ..] fs)
-          with (zip xs' xs'') $ buildMatchArm returnBlock nextBlock (xs' ++ xs) (fs ++ ps) e
+      Rush.Data c ty@(Rush.TData _ _ cs) fs -> mdo
+        let p' = Rush.Tup fs
+        case cs of
+          [_] -> do
+            buildMatchArm returnBlock nextBlock (x : xs) (p' : ps) e
+          _ -> mdo
+            let disc =
+                  int32 . fromJust . Map.lookup c $
+                    Map.fromList (zip ((\(c, _, _) -> c) <$> cs) [0 ..])
+            struct <- mkRef =<< lookup x
+            discMatches <- icmp EQ disc =<< deref =<< gep struct [int32 0, int32 0]
+            condBr discMatches matchBlock nextBlock
+            matchBlock <- block
+            dataStorage <-
+              join $
+                bitcast
+                  <$> gep struct [int32 0, int32 1]
+                  <*> (asPtr <$> asField (Rush.typeOf $ Rush.Tup fs))
+            x' <- fresh
+            with [(x', dataStorage)] $
+              buildMatchArm returnBlock nextBlock (x' : xs) (p' : ps) e
       ty -> error $ "unreachable: " ++ show ty
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
@@ -313,10 +348,30 @@ asStorage = \case
   Rush.TVar {} -> error "unreachable: asValue TVar"
   Rush.TStruct fields -> StructureType False <$> mapM asField (Map.elems fields)
   Rush.TClosure _ caps _ -> StructureType False <$> mapM asField (Map.elems caps)
-  Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType 8 i64]
+  Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType (toEnum requiredSizeInWords) i64]
+    where
+      requiredSizeInWords = foldr max 0 (sizeInWords <$> Map.elems tys)
   Rush.TFn c@Rush.TUnion {} a b -> asValue c
   Rush.TFn c@Rush.TStruct {} a b -> asValue c
+  Rush.TData _ _ [] -> error "unreachable"
   Rush.TData _ _ [(_, _, ts)] -> StructureType False <$> mapM asField ts
+  Rush.TData _ _ cs -> pure $ StructureType False [i32, ArrayType (toEnum requiredSizeInWords) i64]
+    where
+      requiredSizeInWords = foldr max 0 (sum . (\(_, _, ts) -> sizeInWords <$> ts) <$> cs)
+  ty -> error $ "unreachable: " ++ show ty
+
+sizeInWords :: Rush.Type -> Int
+sizeInWords = \case
+  Rush.TInt _ -> 1
+  Rush.TTup tys -> sum $ sizeInWords <$> tys
+  Rush.TList tx -> sizeInWords tx + 1
+  Rush.TVar {} -> error "unreachable: asValue TVar"
+  Rush.TStruct fields -> sum $ sizeInWords <$> Map.elems fields
+  Rush.TClosure _ caps _ -> sum $ sizeInWords <$> Map.elems caps
+  Rush.TUnion tys -> 1 + sum (sizeInWords <$> Map.elems tys)
+  Rush.TFn c@Rush.TUnion {} a b -> sizeInWords c
+  Rush.TFn c@Rush.TStruct {} a b -> sizeInWords c
+  Rush.TData _ _ cs -> 1 + foldr max 0 (sum . (sizeInWords <$>) . (\(_, _, ts) -> ts) <$> cs)
   ty -> error $ "unreachable: " ++ show ty
 
 asField :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type

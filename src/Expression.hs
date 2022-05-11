@@ -5,6 +5,8 @@
 
 module Expression (Expr (..), bindings, typeOf) where
 
+import Control.Monad
+import Data.Function
 import Data.List (intercalate)
 import Data.Text hiding (foldr, intercalate, unwords)
 import Type

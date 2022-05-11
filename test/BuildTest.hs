@@ -274,3 +274,17 @@ spec = describe "rush build" $ do
       decl ["int64_t f(int64_t);"]
     o <- evalInt r d "f(2)"
     o `shouldBe` "4"
+
+  it "builds non-inductive/monomorphic sum types" $ do
+    r <-
+      rush
+        [ "MaybeInt = Nothing | Just Int",
+          "fromJustOrDefault Nothing = 2",
+          "fromJustOrDefault (Just x) = x",
+          "f 0 = fromJustOrDefault Nothing",
+          "f x = fromJustOrDefault (Just x)"
+        ]
+    d <-
+      decl ["int64_t f(int64_t);"]
+    o <- evalInt r d "f(0) + f(3)"
+    o `shouldBe` "5"
