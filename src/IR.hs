@@ -35,12 +35,12 @@ data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
 
 data Type
-  = TInt Span
+  = TInt
   | TTup [Type]
   | TList Type
-  | TData Text Span [(Text, Span, [Type])]
-  | TRef Text Span
-  | TVar Text Span
+  | TData Text [(Text, [Type])]
+  | TRef Text
+  | TVar Text
   | TStruct (Map.Map Text Type)
   | TUnion (Map.Map Text Type)
   | TClosure Text (Map.Map Text Type) Type
@@ -81,9 +81,9 @@ tdoc = \case
   TUnit -> text "()"
   TTup xs -> parens $ cat $ punctuate comma (tdoc <$> xs)
   TList tx -> brackets $ tdoc tx
-  TVar v _ -> text "'" <> text (unpack v)
-  TData n _ _ -> text $ unpack n
-  TRef n _ -> text $ unpack n
+  TVar v -> text "'" <> text (unpack v)
+  TData n _ -> text $ unpack n
+  TRef n -> text $ unpack n
   TStruct fields -> braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
     where
       showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
@@ -138,24 +138,24 @@ showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
 
 instance Template Type where
   freeTypeVars = \case
-    TInt _ -> Set.empty
+    TInt -> Set.empty
     TUnit -> Set.empty
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TList tx -> freeTypeVars tx
-    TVar v _ -> Set.singleton v
+    TVar v -> Set.singleton v
     TStruct fields -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems fields)
     TClosure _ c f ->
       foldr (Set.union . freeTypeVars) Set.empty (Map.elems c)
         `Set.union` freeTypeVars f
     TUnion tys -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems tys)
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
-    TData _ _ _ -> Set.empty
-    TRef _ _ -> Set.empty
+    TData _ _ -> Set.empty
+    TRef _ -> Set.empty
     Kind -> Set.empty
 
   instantiate ty = do
     let vs = Set.toList $ freeTypeVars ty
-    vs' <- replicateM (length vs) (fresh $ spanOf ty)
+    vs' <- replicateM (length vs) (fresh emptySpan)
     let s = Substitutions $ Map.fromList $ zip vs vs'
     return $ case ty of
       TInt {} -> ty
@@ -167,8 +167,8 @@ instance Template Type where
       TUnion tys -> TStruct $ Map.map (apply s) tys
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
-      TData n s cs -> TData n s cs
-      TRef n s -> TRef n s
+      TData n cs -> TData n cs
+      TRef n -> TRef n
       Kind -> Kind
 
 instance Refine Type Type where
@@ -177,23 +177,23 @@ instance Refine Type Type where
     TUnit -> TUnit
     TTup tys -> TTup $ apply ss <$> tys
     TList tx -> TList $ apply ss tx
-    t@(TVar v s) -> withSpan s (Map.findWithDefault t v ss')
+    t@(TVar v) -> Map.findWithDefault t v ss'
     TStruct fields -> TStruct $ apply ss <$> fields
     TUnion tys -> TUnion $ apply ss <$> tys
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
-    TData n s cs -> TData n s cs
-    TRef n s -> TRef n s
+    TData n cs -> TData n cs
+    TRef n -> TRef n
     Kind -> Kind
 
 instance Unify Type where
   unifyingSubstitutions a b = usubs a b
     where
-      usubs t t' | withSpan emptySpan t == withSpan emptySpan t' = return $ Substitutions Map.empty
+      usubs t t' | t == t' = return $ Substitutions Map.empty
       usubs (TTup txs) (TTup tys) = unifyMany txs tys
       usubs (TList tx) (TList ty) = unifyingSubstitutions tx ty
-      usubs (TVar v _) t = v `bind` t
-      usubs t (TVar v _) = v `bind` t
+      usubs (TVar v) t = v `bind` t
+      usubs t (TVar v) = v `bind` t
       usubs (TStruct fields) (TStruct fields') =
         unifyMany (snd <$> Map.toAscList fields) (snd <$> Map.toAscList fields')
       usubs ty@(TClosure f c b) ty'@(TClosure f' c' b') =
@@ -213,10 +213,10 @@ instance Unify Type where
           toFn tc (TClosure _ _ (TFn _ tx tb)) = TFn tc tx tb
           toFn _ _ = error "unreachable"
       usubs t1@TRef {} t2@TData {} = usubs t2 t1
-      usubs (TData n _ _) (TRef n' _) | n == n' = return $ Substitutions Map.empty
+      usubs (TData n _) (TRef n') | n == n' = return $ Substitutions Map.empty
       usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
-  isVar v (TVar tv _) = v == tv
+  isVar v (TVar tv) = v == tv
   isVar _ _ = False
 
 unConst :: Constant t -> Expr t
@@ -254,34 +254,3 @@ typeOf = \case
   Union ty disc val -> TUnion ty
   App ty f x -> ty
   EType _ -> Kind
-
--- TODO: Merge Spans
-spanOf :: Type -> Span
-spanOf = \case
-  TInt s -> s
-  TTup tys -> spanOf $ head tys
-  TList tx -> spanOf tx
-  TVar _ s -> s
-  TStruct _ -> emptySpan
-  TUnion _ -> emptySpan
-  TClosure _ c tf -> spanOf tf
-  TFn _ a b -> spanOf a
-  TUnit -> emptySpan
-  TData _ s _ -> s
-  TRef _ s -> s
-  Kind -> emptySpan
-
-withSpan :: Span -> Type -> Type
-withSpan s = \case
-  TInt _ -> TInt s
-  TTup tys -> TTup $ withSpan s <$> tys
-  TList tx -> TList $ withSpan s tx
-  TVar v _ -> TVar v s
-  TStruct fields -> TStruct $ withSpan s <$> fields
-  TUnion tys -> TUnion $ withSpan s <$> tys
-  TClosure f c tf -> TClosure f (Map.map (withSpan s) c) (withSpan s tf)
-  TFn cls a b -> TFn (withSpan s cls) (withSpan s a) (withSpan s b)
-  TUnit -> TUnit
-  TData n _ cs -> TData n s ((\(c, ty, tys) -> (c, s, withSpan s <$> tys)) <$> cs)
-  TRef n _ -> TRef n s
-  Kind -> Kind

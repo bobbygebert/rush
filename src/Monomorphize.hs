@@ -56,7 +56,7 @@ instance TypeVarStream (State BuildState) Type where
     state <- get
     let n : ns = names state
     put $ state {names = ns}
-    return $ TVar n span
+    return $ TVar n
 
 runBuild :: Build a -> (a, [Constraint Type])
 runBuild =
@@ -80,7 +80,7 @@ instance TypeVarStream (State GenerateState) Type where
     state <- get
     let n : ns = numbers state
     put $ state {numbers = ns}
-    return $ TVar n span
+    return $ TVar n
 
 runGenerate :: Context Type -> Context (IR.Constant Type) -> Generate [IR.Named Type] -> [IR.Named Type]
 runGenerate types templates =
@@ -186,16 +186,16 @@ template v = do
 -- TODO: merge spans?
 init :: Rush.Type -> Build Type
 init = \case
-  Rush.TInt s -> pure $ TInt s
+  Rush.TInt s -> pure TInt
   Rush.TTup tys -> TTup <$> mapM init tys
   Rush.TList tx -> TList <$> init tx
-  Rush.TVar v s -> pure $ TVar v s
-  Rush.TData c s ts -> TData c s <$> mapM (\(c, s, ts) -> (c,s,) <$> mapM init ts) ts
-  Rush.TRef n s -> pure $ TRef n s
+  Rush.TVar v s -> pure $ TVar v
+  Rush.TData c s ts -> TData c <$> mapM (\(c, s, ts) -> (c,) <$> mapM init ts) ts
+  Rush.TRef n s -> pure $ TRef n
   a Rush.:-> b -> do
     ta <- init a
     tb <- init b
-    tc <- freshVar (spanOf ta)
+    tc <- freshVar
     TFn tc <$> init a <*> init b
   Rush.Kind s -> pure Kind
 
@@ -284,7 +284,7 @@ closeOverExpr parent e = case e of
           else TStruct (Map.map typeOf cs)
     f <- define name $ IR.CFn tc (x, tx') b'
     b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr name b
-    tp <- TFn <$> freshVar emptySpan <*> freshVar emptySpan <*> pure (TFn tc tx' (typeOf b'))
+    tp <- TFn <$> freshVar <*> freshVar <*> pure (TFn tc tx' (typeOf b'))
     lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
     return $ case tc of
@@ -353,8 +353,8 @@ freshName = do
   put state {names = tail $ names state}
   return $ head $ names state
 
-freshVar :: Span -> Build Type
-freshVar s = flip TVar s <$> freshName
+freshVar :: Build Type
+freshVar = TVar <$> freshName
 
 define :: Text -> IR.Constant Type -> Build (Expr Type)
 define name val = do
