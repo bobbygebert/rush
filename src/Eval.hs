@@ -22,7 +22,6 @@ data Constant t
   = CNum Text t
   | CData Text t [Constant t]
   | CLambda (Text, t) (Expr t)
-  | CType (Text, t) [(Text, t, [Type])]
   deriving (Show, Eq, Functor, Foldable)
 
 data Named t = Named Text (Constant t)
@@ -32,16 +31,6 @@ instance Traversable Constant where
   traverse f (CNum n ty) = CNum n <$> f ty
   traverse f (CData c ty xs) = CData c <$> f ty <*> traverse (traverse f) xs
   traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
-  traverse f (CType (n, k) cs) =
-    CType
-      <$> ((n,) <$> f k)
-      <*> traverse' f cs
-    where
-      traverse' f ((c, ty, tys) : cs) =
-        (:)
-          <$> ((c,,) <$> f ty <*> pure tys)
-          <*> traverse' f cs
-      traverse' f [] = pure []
 
 instance Traversable Named where
   traverse f (Named n c) = Named n <$> traverse f c

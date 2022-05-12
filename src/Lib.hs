@@ -11,7 +11,7 @@ import Data.Either (partitionEithers)
 import Data.Function
 import Data.Functor
 import qualified Data.Map as Map
-import Data.Text hiding (unlines)
+import Data.Text hiding (filter, unlines)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
 import Eval
@@ -36,19 +36,16 @@ build path source =
     <$> (inferAndCheck . (desugar <$>) =<< parse path source)
 
 reduce :: [Item Type] -> [Named Type]
-reduce = reduce' emptyContext
+reduce = reduce' emptyContext . (namedExprs =<<)
   where
-    reduce' :: Context (Constant Type) -> [Item Type] -> [Named Type]
     reduce' ctx = \case
       [] -> []
-      (Item name ty term) : is -> Named name c : reduce' ctx' is
+      (name, expr) : is -> Named name expr' : reduce' ctx' is
         where
-          c = case term of
-            Item.Expr e -> eval ctx e
-            Item.Type (n, k) cs -> CType (n, k) cs'
-              where
-                cs' = (\(Item.Constructor c t ts) -> (c, t, ts)) <$> cs
-          ctx' = Context (Map.insert name c (defs ctx))
+          expr' = eval ctx expr
+          ctx' = Context (Map.insert name expr' (defs ctx))
+    namedExprs (Item name _ (Item.Expr expr)) = [(name, expr)]
+    namedExprs (Item _ _ Item.Type {}) = []
 
 inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
 inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' primitives

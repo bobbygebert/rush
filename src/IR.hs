@@ -23,7 +23,6 @@ data Constant t
   = CNum Text t
   | CData Text t [Constant t]
   | CFn t (Text, t) (Expr t)
-  | CType Text t [(Text, [Type])]
   deriving (Eq, Functor, Foldable)
 
 instance (Show t) => Show (Constant t) where
@@ -31,7 +30,6 @@ instance (Show t) => Show (Constant t) where
     CNum n _ -> unpack n
     CData n ty xs -> show $ Data n ty (unConst <$> xs)
     CFn tc (x, tx) b -> show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
-    CType n _ _ -> unpack n
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -69,7 +67,6 @@ data Expr t
   | Fn t (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | App t (Expr t) (Expr t)
-  | EType Text
   deriving (Eq, Functor, Foldable, Traversable)
 
 instance (Show t) => Show (Expr t) where
@@ -127,7 +124,6 @@ vdoc = \case
     where
       showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
-  EType n -> text $ unpack n
 
 showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
 
@@ -214,7 +210,6 @@ unConst = \case
   CFn tc x b -> Fn tc x b
   CData c ty xs -> Data c ty (unConst <$> xs)
   CNum n ty -> Num n ty
-  CType n _ _ -> EType n
 
 const :: Expr t -> Constant t
 const = \case
@@ -242,4 +237,3 @@ typeOf = \case
   Fn cls a b -> TFn cls (snd a) (typeOf b)
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   App ty f x -> ty
-  EType _ -> Kind

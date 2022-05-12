@@ -101,7 +101,6 @@ buildItem item@(Rush.Named name constant) =
           =<< global (fromText name)
           <$> asStorage ty
           <*> pure storage
-      Rush.CType n t cs -> pure ()
       e -> error $ "unreachable Item: " ++ unpack name ++ ": " ++ show e
 
 buildExpr ::
