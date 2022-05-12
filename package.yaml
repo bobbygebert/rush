@@ -32,6 +32,7 @@ library:
   - llvm-hs-pretty >= 0.9
   - megaparsec
   - mtl
+  - ordered-containers
   - parser-combinators
   - pretty
   - text

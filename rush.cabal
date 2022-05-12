@@ -51,6 +51,7 @@ library
     , llvm-hs-pure ==9.0.*
     , megaparsec
     , mtl
+    , ordered-containers
     , parser-combinators
     , pretty
     , text

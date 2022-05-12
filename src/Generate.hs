@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 module Generate (buildModule) where
@@ -14,10 +15,11 @@ import Data.Char
 import Data.Function
 import Data.List (elemIndex)
 import qualified Data.Map as Map
+import qualified Data.Map.Ordered as OMap
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import Data.String
-import Data.Text hiding (filter, foldr, head, length, null, replicate, tail, take, unlines, zip)
+import Data.Text hiding (any, filter, foldr, head, length, null, replicate, tail, take, unlines, zip)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
 import GHC.Stack (HasCallStack, callStack, getCallStack)
@@ -93,10 +95,8 @@ buildItem item@(Rush.Named name constant) =
         let storage = case cs of
               [_] -> Struct Nothing False []
               _ ->
-                Struct
-                  Nothing
-                  False
-                  [Int 32 disc, Array i64 $ replicate storageSize (Int 64 0)]
+                let fields = [Int 32 disc, Array i64 $ replicate storageSize (Int 64 0)]
+                 in Struct Nothing False fields
         define name
           =<< global (fromText name)
           <$> asStorage ty
@@ -125,28 +125,31 @@ buildExpr e = do
         (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
         (\(i, x, tx) -> join $ store <$> gep t [int32 0, int32 i] <*> pure 0 <*> mkVal tx x)
       pure t
-    Rush.Data c ty@(Rush.TData _ cs) xs -> do
+    Rush.Data c ty@(Rush.TData d cs) xs -> do
       let disc = fromJust . Map.lookup c $ Map.fromList (zip (fst <$> cs) [0 ..])
       let storageSize = sizeInWords ty - 1
-      struct <- malloc ty
+      ty' <- asStorage ty
+      struct <- if isInductive ty then malloc ty else alloca ty' Nothing 0
       discStorage <- case cs of
         [_] -> pure struct
         _ -> gep struct [int32 0, int32 0]
+      let txs = Rush.typeOf . snd <$> OMap.assocs xs
+      txs' <- mapM asField txs
       dataStorage <- case cs of
         [_] -> pure struct
         _ -> do
           store discStorage 0 (int32 disc)
-          join $
+          flip
             bitcast
-              <$> gep struct [int32 0, int32 1]
-              <*> (asPtr . StructureType False <$> mapM (asField . Rush.typeOf) xs)
-      xs' <- mapM buildExpr xs
+            (asPtr $ StructureType False txs')
+            =<< gep struct [int32 0, int32 1]
+      xs' <- mapM (buildExpr . snd) (OMap.assocs xs)
       forM_
-        (zip3 [0 ..] xs' (Rush.typeOf <$> xs))
+        (zip3 [0 ..] xs' txs)
         ( \(i, x, tx) ->
             join $
               store
-                <$> gep dataStorage [int32 0, int32 i] <*> pure 0 <*> pure x
+                <$> gep dataStorage [int32 0, int32 i] <*> pure 0 <*> mkVal tx x
         )
       pure struct
     Rush.List tx xs -> case xs of
@@ -175,30 +178,25 @@ buildExpr e = do
       x' <- mkArg (Rush.typeOf x) =<< buildExpr x
       case Rush.typeOf f of
         Rush.TFn Rush.TUnit tx tb -> flip call [(x', [])] =<< mkRef =<< buildExpr f
-        tc@(Rush.TClosure f' _ _) -> do
-          c' <- mkArg tc =<< buildExpr f
-          flip call [(c', []), (x', [])] =<< mkRef =<< lookup f'
-        Rush.TData _ tcs -> mdo
-          closure <- mkRef =<< buildExpr f
-          disc' <- deref =<< gep closure [int32 0, int32 0]
-          closureStorage <- gep closure [int32 0, int32 1]
-          arg <- mkArg (Rush.typeOf x) =<< buildExpr x
-          br matchBlock
-          let arms = zip (int64 <$> [0 ..]) (second (head . Map.elems) <$> tcs)
-          matchBlock <- block
-          tried <- callClosureSum returnBlock closureStorage disc' arg [] arms
-          returnBlock <- block `named` "return"
-          phi tried
+        tc@(Rush.TData _ tcs) -> case tcs of
+          [(fname, cs)] -> do
+            c' <- mkArg tc =<< buildExpr f
+            flip call [(c', []), (x', [])] =<< mkRef =<< lookup fname
+          tcs -> mdo
+            closure <- mkRef =<< buildExpr f
+            disc' <- deref =<< gep closure [int32 0, int32 0]
+            closureStorage <- gep closure [int32 0, int32 1]
+            arg <- mkArg (Rush.typeOf x) =<< buildExpr x
+            br matchBlock
+            let arms =
+                  zip
+                    (int64 <$> [0 ..])
+                    (second (head . (snd <$>) . OMap.assocs) <$> tcs)
+            matchBlock <- block
+            tried <- callClosureSum returnBlock closureStorage disc' arg [] arms
+            returnBlock <- block `named` "return"
+            phi tried
         ty -> error $ "unreachable: " ++ show (f, ty)
-    c@(Rush.Closure name caps _) -> do
-      closureStorage <- do
-        tc' <- asValue (Rush.typeOf c)
-        alloca tc' Nothing 0
-      forM_ (zip3 [0 ..] (Map.keys caps) (Rush.typeOf <$> Map.elems caps)) $ \(i, fieldName, ty) -> do
-        fieldVal <- mkVal ty =<< lookup fieldName
-        fieldPtr <- gep closureStorage [int32 0, int32 i]
-        store fieldPtr 0 fieldVal
-      pure closureStorage
     e -> error $ "unreachable: " ++ show e
 
 buildMatchArms ::
@@ -263,7 +261,7 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
         with [(h, h'), (t, t')] $
           buildMatchArm returnBlock nextBlock (h : t : xs) (hp : tp : ps) e
       Rush.Data c ty@(Rush.TData _ cs) fs -> mdo
-        let p' = Rush.Tup fs
+        let p' = Rush.Tup (snd <$> OMap.assocs fs)
         case cs of
           [_] -> do
             buildMatchArm returnBlock nextBlock (x : xs) (p' : ps) e
@@ -279,7 +277,7 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
               join $
                 bitcast
                   <$> gep struct [int32 0, int32 1]
-                  <*> (asPtr <$> asField (Rush.typeOf $ Rush.Tup fs))
+                  <*> (asPtr <$> asField (Rush.typeOf p'))
             x' <- fresh
             with [(x', dataStorage)] $
               buildMatchArm returnBlock nextBlock (x' : xs) (p' : ps) e
@@ -332,6 +330,8 @@ dataType ::
   [(Text, [Rush.Type])] ->
   m Type
 dataType name cs = do
+  -- Ensure that field types are defined
+  mapM_ asStorage (snd =<< cs)
   let requiredSizeInWords =
         foldr max 0 (sum . ((sizeInWords <$>) . snd) <$> cs)
   ty <- case cs of
@@ -348,7 +348,9 @@ dataType name cs = do
 
 asValue :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 asValue ty@Rush.TList {} = asPtr <$> asStorage ty
-asValue ty@Rush.TData {} = asPtr <$> asStorage ty
+asValue ty@(Rush.TData d _)
+  | isInductive ty = asPtr <$> asStorage ty
+  | otherwise = asStorage ty
 asValue ty@Rush.TRef {} = asPtr <$> asStorage ty
 asValue ty = asStorage ty
 
@@ -358,9 +360,8 @@ asStorage t = case t of
   Rush.TTup tys -> StructureType False <$> mapM asValue tys
   Rush.TList tx -> listType tx
   Rush.TVar {} -> error "unreachable: asValue TVar"
-  Rush.TClosure f cs _ -> dataType (fromText $ "_storage_" <> f) [("0", Map.elems cs)]
   Rush.TFn c@Rush.TData {} a b -> asValue c
-  Rush.TData n cs -> dataType n (fmap (second $ fmap snd . Map.toAscList) cs)
+  Rush.TData n cs -> dataType n (fmap (second $ fmap snd . OMap.assocs) cs)
   Rush.TRef n -> pure $ NamedTypeReference (fromText n)
   ty -> error $ "unreachable: " ++ show ty
 
@@ -370,17 +371,27 @@ sizeInWords = \case
   Rush.TTup tys -> sum $ sizeInWords <$> tys
   Rush.TList tx -> sizeInWords tx + 1
   Rush.TVar {} -> error "unreachable: asValue TVar"
-  Rush.TClosure _ caps _ -> sum $ sizeInWords <$> Map.elems caps
   Rush.TData _ cs -> 1 + foldr max 0 (sum . (sizeInWords <$>) . snd <$> cs)
   Rush.TRef {} -> 1
   ty -> error $ "unreachable: " ++ show ty
 
 asField :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
-asField = \case
+asField ty = case ty of
   Rush.TList tx -> asPtr <$> listType tx
-  Rush.TData name _ -> pure $ asPtr (NamedTypeReference (fromText name))
+  Rush.TData name _
+    | isInductive ty -> pure $ asPtr (NamedTypeReference (fromText name))
+    | otherwise -> pure $ NamedTypeReference (fromText name)
   Rush.TRef name -> pure $ asPtr (NamedTypeReference (fromText name))
   ty -> asValue ty
+
+isInductive :: Rush.Type -> Bool
+isInductive (Rush.TData name cs) =
+  any (isInductive' name) ((snd <$>) . OMap.assocs . snd =<< cs)
+  where
+    isInductive' name (Rush.TRef name') = name == name'
+    isInductive' name (Rush.TData name' cs) =
+      name == name' || any (isInductive' name) ((snd <$>) . OMap.assocs . snd =<< cs)
+    isInductive' _ _ = False
 
 asArg :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 asArg ty
@@ -396,12 +407,13 @@ mkArg ty
   | otherwise = mkRef
 
 mkVal :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
-mkVal Rush.TList {} op = mkRef op
-mkVal Rush.TData {} op = mkRef op
-mkVal Rush.TRef {} op = mkRef op
-mkVal ty op = case typeOf op of
-  PointerType {} -> deref op
-  _ -> pure op
+mkVal ty op = case ty of
+  Rush.TList {} -> mkRef op
+  Rush.TRef {} -> mkRef op
+  Rush.TData {} | isInductive ty -> mkRef op
+  ty -> case typeOf op of
+    PointerType {} -> deref op
+    _ -> pure op
 
 mkRet :: MonadIRBuilder m => Rush.Type -> Operand -> m Operand
 mkRet = mkVal
@@ -425,7 +437,6 @@ passedByValue :: Rush.Type -> Bool
 passedByValue = \case
   Rush.TTup {} -> False
   Rush.TList {} -> False
-  Rush.TClosure {} -> False
   Rush.TData {} -> False
   Rush.TRef {} -> False
   _ -> True
@@ -444,8 +455,8 @@ with vs = local (\ctx -> ctx {locals = foldr extendContext (locals ctx) vs})
   where
     extendContext (v, op) = Map.insert v op . Map.delete v
 
-bind :: (MonadReader Locals m) => Map.Map Text Rush.Type -> Operand -> m a -> m a
-bind caps op = local (\ctx -> ctx {closure = Just op, captures = fst <$> Map.toAscList caps})
+bind :: (MonadReader Locals m) => OMap.OMap Text Rush.Type -> Operand -> m a -> m a
+bind caps op = local (\ctx -> ctx {closure = Just op, captures = fst <$> OMap.assocs caps})
 
 lookup :: (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadModuleBuilder m) => Text -> m Operand
 lookup name = do

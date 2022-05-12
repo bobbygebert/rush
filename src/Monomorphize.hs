@@ -19,6 +19,7 @@ import qualified Data.Function as Functor
 import Data.Functor
 import Data.List hiding (init, lookup)
 import qualified Data.Map as Map
+import qualified Data.Map.Ordered as OMap
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import Data.Text hiding (concatMap, filter, foldr, head, init, partition, reverse, tail, unlines, zip)
@@ -142,7 +143,6 @@ monomorphize locals e = case e of
         let bs = foldr (Set.union . bindings) Set.empty ps
          in (ps,) <$> monomorphize (locals `Set.union` bs) b
   Fn tc (x, tx) b -> Fn tc (x, tx) <$> monomorphize (Set.insert x locals) b
-  Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
   Data c ty xs -> Data c ty <$> mapM (monomorphize locals) xs
 
@@ -188,7 +188,7 @@ init = \case
   Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v
   Rush.TData c s ts ->
-    TData c . fmap (second $ Map.fromList . zip fnames) <$> ts'
+    TData c . fmap (second $ OMap.fromList . zip fnames) <$> ts'
     where
       ts' = mapM (\(c', _, ts') -> (c',) <$> mapM init ts') ts
       fnames = (pack . show <$> [0 ..])
@@ -239,10 +239,10 @@ closeOverExpr parent e = case e of
     where
       closureTypes xs' = discriminatedType <$> xs'
       discriminatedType x = case typeOf x of
-        tc@(TClosure f _ _) -> (f, Map.singleton "0" tc)
+        tc@(TData f _) -> (f, OMap.singleton ("0", tc))
         _ -> error "unreachable"
       discriminatedVal tc x = case typeOf x of
-        TClosure f _ _ -> Data f tc [x]
+        TData f _ -> Data f tc (OMap.fromList [("0", x)])
         _ -> error "unreachable"
       toData tc xs' = discriminatedVal tc <$> xs'
   Rush.Cons h t -> Cons <$> closeOverExpr parent h <*> closeOverExpr parent t
@@ -268,36 +268,33 @@ closeOverExpr parent e = case e of
           mapM_ (ensure . (ty' :~) . typeOf) xs'
           pure $ List ty' xs'
         Rush.Cons h t -> Cons <$> closeOverPattern h <*> closeOverPattern t
-        Rush.Data n ty xs -> Data n <$> init ty <*> mapM closeOverPattern xs
+        Rush.Data n ty xs ->
+          let toMap = OMap.fromList . zip (pack . show <$> [0 ..])
+           in Data n <$> init ty <*> (toMap <$> mapM closeOverPattern xs)
         _ -> error "unreachable"
   Rush.Lambda (x, tx) b -> mdo
     let fname = "_cls_" <> parent
-    let cname = "_storage_" <> fname
+    let cname = fname
     tx' <- init tx
-    cs <- captures (Set.singleton x) b
-    let tcs = Map.map typeOf cs
+    cs <- OMap.fromList . Map.toList <$> captures (Set.singleton x) b
+    let tcs = typeOf . snd <$> OMap.assocs cs
     tc <-
       return $
-        if Map.size cs == 0
+        if OMap.size cs == 0
           then TUnit
-          else TData cname [(fname, Map.map typeOf cs)]
+          else TData cname [(fname, OMap.fromList (second typeOf <$> OMap.assocs cs))]
     f <- define fname $ IR.CFn tc (x, tx') b'
-    b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr fname b
-    tp <-
-      TFn
-        <$> freshVar
-        <*> freshVar
-        <*> pure (TClosure fname tcs (TFn tc tx' (typeOf b')))
+    b' <- with ((x, tx') : (second typeOf <$> OMap.assocs cs)) $ closeOverExpr fname b
+    tp <- TFn <$> freshVar <*> freshVar <*> pure tc
     lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
     return $ case tc of
       TUnit -> f
-      _ -> Closure fname cs f
+      _ -> Data fname tc cs
   Rush.App ty f x -> do
     f' <- closeOverExpr parent f
     x' <- closeOverExpr parent x
     (tx', tb') <- case typeOf f' of
-      TClosure _ _ (TFn _ tx tb) -> pure (tx, tb)
       TFn _ tx tb -> pure (tx, tb)
       TCallable tx tb -> pure (tx, tb)
       tf -> do
@@ -308,7 +305,9 @@ closeOverExpr parent e = case e of
     ensure $ typeOf x' :~ tx'
     ensure . (tb' :~) =<< init ty
     return $ App tb' f' x'
-  Rush.Data c ty xs -> Data c <$> init ty <*> mapM (closeOverExpr parent) xs
+  Rush.Data c ty xs ->
+    let toMap = OMap.fromList . zip (pack . show <$> [0 ..])
+     in Data c <$> init ty <*> (toMap <$> mapM (closeOverExpr parent) xs)
 
 captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))
 captures bound =
@@ -352,7 +351,7 @@ typedBindings = \case
   Tup ps -> typedBindings =<< ps
   List _ ps -> typedBindings =<< ps
   Cons h t -> typedBindings h ++ typedBindings t
-  Data _ _ ps -> typedBindings =<< ps
+  Data _ _ ps -> typedBindings . snd =<< OMap.assocs ps
   _ -> error "unreachable"
 
 freshName :: Build Text

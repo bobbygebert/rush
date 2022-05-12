@@ -11,6 +11,7 @@ import Control.Monad.Except
 import Data.Bifunctor
 import Data.List hiding (concat)
 import qualified Data.Map as Map
+import qualified Data.Map.Ordered as OMap
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, length, unwords, zip)
 import qualified Data.Text as Text
@@ -28,8 +29,11 @@ data Constant t
 instance (Show t) => Show (Constant t) where
   show = \case
     CNum n _ -> unpack n
-    CData n ty xs -> show $ Data n ty (unConst <$> xs)
-    CFn tc (x, tx) b -> show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
+    CData n ty xs ->
+      show $
+        Data n ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unConst <$> xs))
+    CFn tc (x, tx) b ->
+      show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
 
 data Named t = Named Text (Constant t)
   deriving (Show, Eq, Functor)
@@ -38,10 +42,9 @@ data Type
   = TInt
   | TTup [Type]
   | TList Type
-  | TData Text [(Text, Map.Map Text Type)]
+  | TData Text [(Text, OMap.OMap Text Type)]
   | TRef Text
   | TVar Text
-  | TClosure Text (Map.Map Text Type) Type
   | TCallable Type Type
   | TFn Type Type Type
   | TUnit
@@ -63,10 +66,9 @@ data Expr t
   | Tup [Expr t]
   | List t [Expr t]
   | Cons (Expr t) (Expr t)
-  | Data Text t [Expr t]
+  | Data Text t (OMap.OMap Text (Expr t))
   | Match [Expr t] [([Expr t], Expr t)]
   | Fn t (Text, t) (Expr t)
-  | Closure Text (Map.Map Text (Expr t)) (Expr t)
   | App t (Expr t) (Expr t)
   deriving (Eq, Functor, Foldable, Traversable)
 
@@ -81,10 +83,6 @@ tdoc = \case
   TVar v -> text "'" <> text (unpack v)
   TData n _ -> text $ unpack n
   TRef n -> text $ unpack n
-  TClosure f cs tf -> parens $ showStruct cs <+> text (unpack f) <> colon <+> tdoc tf
-    where
-      showStruct fields = braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
-      showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
   TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
   TCallable tx tb -> parens $ tdoc tx <+> text "->" <+> tdoc tb
   Kind -> "*"
@@ -105,8 +103,16 @@ vdoc = \case
     where
       cons (Cons x xs) = vdoc x <+> "::" <+> cons xs
       cons x = vdoc x
-  Data n _ [] -> text $ unpack n
-  Data n _ xs -> parens $ text (unpack n) <+> cat (punctuate space (vdoc <$> xs))
+  Data n _ fs
+    | OMap.size fs == 0 -> text $ unpack n
+    | otherwise ->
+      parens $
+        text (unpack n)
+          <+> cat
+            ( punctuate
+                (comma <> space)
+                ((\(k, v) -> parens $ text (unpack k) <> colon <+> vdoc v) <$> OMap.assocs fs)
+            )
   Match xs ps ->
     hang (text "match" <+> cat (vdoc <$> xs)) 2 $
       braces $
@@ -119,12 +125,6 @@ vdoc = \case
         <+> parens (text (unpack x) <> colon <+> text (show tx))
         <+> "->"
         <+> vdoc b
-  Closure name fields f ->
-    parens $
-      braces (cat $ punctuate comma (showCapture <$> Map.toList fields))
-        <+> vdoc f
-    where
-      showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
 
 showBinOp op a b = parens $ vdoc a <+> op <+> vdoc b
@@ -136,9 +136,6 @@ instance Template Type where
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TList tx -> freeTypeVars tx
     TVar v -> Set.singleton v
-    TClosure _ c f ->
-      foldr (Set.union . freeTypeVars) Set.empty (Map.elems c)
-        `Set.union` freeTypeVars f
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
     TCallable a b -> freeTypeVars a `Set.union` freeTypeVars b
     TData _ _ -> Set.empty
@@ -155,7 +152,6 @@ instance Template Type where
       TTup tys -> TTup $ apply s <$> tys
       TList tx -> TList $ apply s tx
       TVar {} -> ty
-      TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
       TCallable a b -> TCallable (apply s a) (apply s b)
       TData n cs -> TData n cs
@@ -169,7 +165,6 @@ instance Refine Type Type where
     TTup tys -> TTup $ apply ss <$> tys
     TList tx -> TList $ apply ss tx
     t@(TVar v) -> Map.findWithDefault t v ss'
-    TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
     TCallable as b -> TCallable (apply ss as) (apply ss b)
     TData n cs -> TData n cs
@@ -187,31 +182,15 @@ instance Unify Type where
       usubs a b@TVar {} = usubs b a
       usubs t1@TRef {} t2@TData {} = usubs t2 t1
       usubs (TData n _) (TRef n') | n == n' = return $ Substitutions Map.empty
-      usubs ty@(TClosure f c b) ty'@(TClosure f' c' b') =
-        unifyMany (b : Map.elems c) (b' : Map.elems c')
-      usubs tf@TFn {} tc@TClosure {} = usubs tc tf
-      usubs tc@(TClosure _ _ tf) tf'@(TFn tc' _ _) =
-        unifyMany [tf, toData tc] [tf', tc']
       usubs (TFn tc tx tb) (TFn tc' tx' tb') = unifyMany [tc, tx, tb] [tc', tx', tb']
       usubs tf@TFn {} tc@TData {} = usubs tc tf
-      usubs (TData n tcs) tf@TFn {} = do
-        let tc' = TData n $ second (Map.map toData) <$> tcs
-        let tfs' = toFn tc' . head . Map.elems . snd <$> tcs
-        uncurry unifyMany $ unzip (zip tfs' (repeat tf))
+      usubs tc@TData {} tf@(TFn tc' _ _) = usubs tc tc'
+      usubs TData {} TCallable {} = return $ Substitutions Map.empty
+      usubs TCallable {} TData {} = return $ Substitutions Map.empty
       usubs (TCallable a b) (TCallable a' b') = unifyMany [a, b] [a', b']
       usubs a b@TCallable {} = usubs b a
       usubs (TCallable a b) (TFn _ a' b') = unifyMany [a, b] [a', b']
-      usubs (TCallable a b) (TClosure _ _ (TFn _ a' b')) = unifyMany [a, b] [a', b']
-      --usubs (TCallable a b) (TData ) = unifyMany [a, b] [a', b']
       usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
-
-      toData (TClosure f cs _) =
-        let name = Text.concat ["_storage_", f]
-         in TData name [(f, cs)]
-      toData _ = error "unreachable"
-
-      toFn tc (TClosure _ _ (TFn _ tx tb)) = TFn tc tx tb
-      toFn _ _ = error "unreachable"
 
   isVar v (TVar tv) = v == tv
   isVar _ _ = False
@@ -219,13 +198,14 @@ instance Unify Type where
 unConst :: Constant t -> Expr t
 unConst = \case
   CFn tc x b -> Fn tc x b
-  CData c ty xs -> Data c ty (unConst <$> xs)
   CNum n ty -> Num n ty
+  CData c ty fs ->
+    Data c ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unConst <$> fs))
 
 const :: Expr t -> Constant t
 const = \case
   Fn tc x b -> CFn tc x b
-  Data c ty xs -> CData c ty (const <$> xs)
+  Data c ty xs -> CData c ty (const . snd <$> OMap.assocs xs)
   Num n ty -> CNum n ty
   _ -> error "unreachable"
 
@@ -246,5 +226,4 @@ typeOf = \case
   Match xs ((ps, b) : _) -> typeOf b
   Match _ _ -> error "unreachable"
   Fn cls a b -> TFn cls (snd a) (typeOf b)
-  Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
   App ty f x -> ty
