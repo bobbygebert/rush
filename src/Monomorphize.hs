@@ -196,8 +196,9 @@ init = \case
   a Rush.:-> b -> do
     ta <- init a
     tb <- init b
-    tc <- freshVar
-    TFn tc <$> init a <*> init b
+    tf <- freshVar
+    ensure . (tf :~) =<< TCallable <$> init a <*> init b
+    pure tf
   Rush.Kind s -> pure Kind
 
 closeOverConstant :: Rush.Named Rush.Type -> Build Type
@@ -274,6 +275,7 @@ closeOverExpr parent e = case e of
     let cname = "_storage_" <> fname
     tx' <- init tx
     cs <- captures (Set.singleton x) b
+    let tcs = Map.map typeOf cs
     tc <-
       return $
         if Map.size cs == 0
@@ -281,7 +283,11 @@ closeOverExpr parent e = case e of
           else TData cname [(fname, Map.map typeOf cs)]
     f <- define fname $ IR.CFn tc (x, tx') b'
     b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr fname b
-    tp <- TFn <$> freshVar <*> freshVar <*> pure (TFn tc tx' (typeOf b'))
+    tp <-
+      TFn
+        <$> freshVar
+        <*> freshVar
+        <*> pure (TClosure fname tcs (TFn tc tx' (typeOf b')))
     lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
     return $ case tc of
@@ -290,13 +296,18 @@ closeOverExpr parent e = case e of
   Rush.App ty f x -> do
     f' <- closeOverExpr parent f
     x' <- closeOverExpr parent x
-    let (tx', ty') = case typeOf f' of
-          TClosure _ _ (TFn _ tx tb) -> (tx, tb)
-          TFn _ tx tb -> (tx, tb)
-          ty' -> error $ show (ty, ty')
+    (tx', tb') <- case typeOf f' of
+      TClosure _ _ (TFn _ tx tb) -> pure (tx, tb)
+      TFn _ tx tb -> pure (tx, tb)
+      TCallable tx tb -> pure (tx, tb)
+      tf -> do
+        tx' <- freshVar
+        tb' <- freshVar
+        ensure $ tf :~ TCallable tx' tb'
+        pure (tx', tb')
     ensure $ typeOf x' :~ tx'
-    ensure . (ty' :~) =<< init ty
-    return $ App ty' f' x'
+    ensure . (tb' :~) =<< init ty
+    return $ App tb' f' x'
   Rush.Data c ty xs -> Data c <$> init ty <*> mapM (closeOverExpr parent) xs
 
 captures :: Set.Set Text -> Rush.Expr Rush.Type -> Build (Map.Map Text (Expr Type))

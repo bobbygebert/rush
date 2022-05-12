@@ -173,11 +173,12 @@ buildExpr e = do
       phi tried
     Rush.App ty f x -> do
       x' <- mkArg (Rush.typeOf x) =<< buildExpr x
-      case (f, Rush.typeOf f) of
-        (_, Rush.TFn tc@(Rush.TData _ [(c, caps)]) _ _) -> do
-          closure <- mkArg tc =<< buildExpr f
-          flip call [(closure, []), (x', [])] =<< mkRef =<< lookup c
-        (_, Rush.TFn tc@(Rush.TData _ tcs) _ _) -> mdo
+      case Rush.typeOf f of
+        Rush.TFn Rush.TUnit tx tb -> flip call [(x', [])] =<< mkRef =<< buildExpr f
+        tc@(Rush.TClosure f' _ _) -> do
+          c' <- mkArg tc =<< buildExpr f
+          flip call [(c', []), (x', [])] =<< mkRef =<< lookup f'
+        Rush.TData _ tcs -> mdo
           closure <- mkRef =<< buildExpr f
           disc' <- deref =<< gep closure [int32 0, int32 0]
           closureStorage <- gep closure [int32 0, int32 1]
@@ -188,11 +189,7 @@ buildExpr e = do
           tried <- callClosureSum returnBlock closureStorage disc' arg [] arms
           returnBlock <- block `named` "return"
           phi tried
-        (_, tc@(Rush.TClosure f' _ _)) -> do
-          c' <- mkArg tc =<< buildExpr f
-          flip call [(c', []), (x', [])] =<< mkRef =<< lookup f'
-        (_, Rush.TFn Rush.TUnit tx tb) -> flip call [(x', [])] =<< mkRef =<< buildExpr f
-        (f, ty) -> error $ "unreachable: " ++ show (f, ty)
+        ty -> error $ "unreachable: " ++ show (f, ty)
     c@(Rush.Closure name caps _) -> do
       closureStorage <- do
         tc' <- asValue (Rush.typeOf c)

@@ -42,13 +42,14 @@ data Type
   | TRef Text
   | TVar Text
   | TClosure Text (Map.Map Text Type) Type
-  | TUnit
+  | TCallable Type Type
   | TFn Type Type Type
+  | TUnit
   | Kind
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
 
--- instance Show Type where
---   show = renderStyle (style {lineLength = 100000}) . tdoc
+instance Show Type where
+  show = renderStyle (style {lineLength = 100000}) . tdoc
 
 data Expr t
   = Num Text t
@@ -80,11 +81,12 @@ tdoc = \case
   TVar v -> text "'" <> text (unpack v)
   TData n _ -> text $ unpack n
   TRef n -> text $ unpack n
-  TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
   TClosure f cs tf -> parens $ showStruct cs <+> text (unpack f) <> colon <+> tdoc tf
     where
       showStruct fields = braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
       showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
+  TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
+  TCallable tx tb -> parens $ tdoc tx <+> text "->" <+> tdoc tb
   Kind -> "*"
 
 vdoc :: (Show t) => Expr t -> Doc
@@ -138,6 +140,7 @@ instance Template Type where
       foldr (Set.union . freeTypeVars) Set.empty (Map.elems c)
         `Set.union` freeTypeVars f
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
+    TCallable a b -> freeTypeVars a `Set.union` freeTypeVars b
     TData _ _ -> Set.empty
     TRef _ -> Set.empty
     Kind -> Set.empty
@@ -154,6 +157,7 @@ instance Template Type where
       TVar {} -> ty
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
+      TCallable a b -> TCallable (apply s a) (apply s b)
       TData n cs -> TData n cs
       TRef n -> TRef n
       Kind -> Kind
@@ -167,6 +171,7 @@ instance Refine Type Type where
     t@(TVar v) -> Map.findWithDefault t v ss'
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
+    TCallable as b -> TCallable (apply ss as) (apply ss b)
     TData n cs -> TData n cs
     TRef n -> TRef n
     Kind -> Kind
@@ -177,8 +182,11 @@ instance Unify Type where
       usubs t t' | t == t' = return $ Substitutions Map.empty
       usubs (TTup txs) (TTup tys) = unifyMany txs tys
       usubs (TList tx) (TList ty) = unifyingSubstitutions tx ty
+      usubs (TVar v) TCallable {} = return $ Substitutions Map.empty
       usubs (TVar v) t = v `bind` t
-      usubs t (TVar v) = v `bind` t
+      usubs a b@TVar {} = usubs b a
+      usubs t1@TRef {} t2@TData {} = usubs t2 t1
+      usubs (TData n _) (TRef n') | n == n' = return $ Substitutions Map.empty
       usubs ty@(TClosure f c b) ty'@(TClosure f' c' b') =
         unifyMany (b : Map.elems c) (b' : Map.elems c')
       usubs tf@TFn {} tc@TClosure {} = usubs tc tf
@@ -190,8 +198,11 @@ instance Unify Type where
         let tc' = TData n $ second (Map.map toData) <$> tcs
         let tfs' = toFn tc' . head . Map.elems . snd <$> tcs
         uncurry unifyMany $ unzip (zip tfs' (repeat tf))
-      usubs t1@TRef {} t2@TData {} = usubs t2 t1
-      usubs (TData n _) (TRef n') | n == n' = return $ Substitutions Map.empty
+      usubs (TCallable a b) (TCallable a' b') = unifyMany [a, b] [a', b']
+      usubs a b@TCallable {} = usubs b a
+      usubs (TCallable a b) (TFn _ a' b') = unifyMany [a, b] [a', b']
+      usubs (TCallable a b) (TClosure _ _ (TFn _ a' b')) = unifyMany [a, b] [a', b']
+      --usubs (TCallable a b) (TData ) = unifyMany [a, b] [a', b']
       usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
 
       toData (TClosure f cs _) =
