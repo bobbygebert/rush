@@ -8,20 +8,22 @@ module IR where
 
 import Control.Monad
 import Control.Monad.Except
-import Data.List
+import Data.Bifunctor
+import Data.List hiding (concat)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, length, unwords, zip)
+import qualified Data.Text as Text
 import Infer
 import Span
 import Text.PrettyPrint
-import Prelude hiding (const, (<>))
+import Prelude hiding (concat, const, (++), (<>))
 
 data Constant t
   = CNum Text t
   | CData Text t [Constant t]
   | CFn t (Text, t) (Expr t)
-  | CType Text t [(Text, t, [Type])]
+  | CType Text t [(Text, [Type])]
   deriving (Eq, Functor, Foldable)
 
 instance (Show t) => Show (Constant t) where
@@ -38,19 +40,17 @@ data Type
   = TInt
   | TTup [Type]
   | TList Type
-  | TData Text [(Text, [Type])]
+  | TData Text [(Text, Map.Map Text Type)]
   | TRef Text
   | TVar Text
-  | TStruct (Map.Map Text Type)
-  | TUnion (Map.Map Text Type)
   | TClosure Text (Map.Map Text Type) Type
   | TUnit
   | TFn Type Type Type
   | Kind
-  deriving (Eq, Ord)
+  deriving (Show, Eq, Ord)
 
-instance Show Type where
-  show = renderStyle (style {lineLength = 100000}) . tdoc
+-- instance Show Type where
+--   show = renderStyle (style {lineLength = 100000}) . tdoc
 
 data Expr t
   = Num Text t
@@ -68,7 +68,6 @@ data Expr t
   | Match [Expr t] [([Expr t], Expr t)]
   | Fn t (Text, t) (Expr t)
   | Closure Text (Map.Map Text (Expr t)) (Expr t)
-  | Union (Map.Map Text Type) Text (Expr t)
   | App t (Expr t) (Expr t)
   | EType Text
   deriving (Eq, Functor, Foldable, Traversable)
@@ -84,14 +83,11 @@ tdoc = \case
   TVar v -> text "'" <> text (unpack v)
   TData n _ -> text $ unpack n
   TRef n -> text $ unpack n
-  TStruct fields -> braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
-    where
-      showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
-  TUnion fields -> braces $ nest 2 $ cat $ punctuate (text " |") (nest 2 . showField <$> Map.toList fields)
-    where
-      showField (x, tx) = text (unpack x) <+> colon <+> tdoc tx
   TFn cls tx tb -> parens $ tdoc cls <+> tdoc tx <+> text "->" <+> tdoc tb
-  TClosure f cs tf -> parens $ tdoc (TStruct cs) <+> text (unpack f) <> colon <+> tdoc tf
+  TClosure f cs tf -> parens $ showStruct cs <+> text (unpack f) <> colon <+> tdoc tf
+    where
+      showStruct fields = braces $ nest 2 $ cat $ punctuate comma (showField <$> Map.toList fields)
+      showField (x, tx) = text (unpack x) <> colon <+> tdoc tx
   Kind -> "*"
 
 vdoc :: (Show t) => Expr t -> Doc
@@ -130,7 +126,6 @@ vdoc = \case
         <+> vdoc f
     where
       showCapture (x, e) = text (unpack x) <+> "=" <+> vdoc e
-  Union ty disc val -> text (show ty) <> "." <> text (unpack disc) <> "@" <> vdoc val
   App ty f x -> parens $ parens (vdoc f <+> vdoc x) <> colon <+> text (show ty)
   EType n -> text $ unpack n
 
@@ -143,11 +138,9 @@ instance Template Type where
     TTup tys -> foldr (Set.union . freeTypeVars) Set.empty tys
     TList tx -> freeTypeVars tx
     TVar v -> Set.singleton v
-    TStruct fields -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems fields)
     TClosure _ c f ->
       foldr (Set.union . freeTypeVars) Set.empty (Map.elems c)
         `Set.union` freeTypeVars f
-    TUnion tys -> foldr (Set.union . freeTypeVars) Set.empty (Map.elems tys)
     TFn cls a b -> freeTypeVars cls `Set.union` freeTypeVars a `Set.union` freeTypeVars b
     TData _ _ -> Set.empty
     TRef _ -> Set.empty
@@ -163,8 +156,6 @@ instance Template Type where
       TTup tys -> TTup $ apply s <$> tys
       TList tx -> TList $ apply s tx
       TVar {} -> ty
-      TStruct fields -> TStruct $ Map.map (apply s) fields
-      TUnion tys -> TStruct $ Map.map (apply s) tys
       TClosure f c t -> TClosure f c (apply s t)
       TFn cls a b -> TFn (apply s cls) (apply s a) (apply s b)
       TData n cs -> TData n cs
@@ -178,8 +169,6 @@ instance Refine Type Type where
     TTup tys -> TTup $ apply ss <$> tys
     TList tx -> TList $ apply ss tx
     t@(TVar v) -> Map.findWithDefault t v ss'
-    TStruct fields -> TStruct $ apply ss <$> fields
-    TUnion tys -> TUnion $ apply ss <$> tys
     TClosure f c b -> TClosure f (apply ss c) (apply ss b)
     TFn cls as b -> TFn (apply ss cls) (apply ss as) (apply ss b)
     TData n cs -> TData n cs
@@ -194,27 +183,28 @@ instance Unify Type where
       usubs (TList tx) (TList ty) = unifyingSubstitutions tx ty
       usubs (TVar v) t = v `bind` t
       usubs t (TVar v) = v `bind` t
-      usubs (TStruct fields) (TStruct fields') =
-        unifyMany (snd <$> Map.toAscList fields) (snd <$> Map.toAscList fields')
       usubs ty@(TClosure f c b) ty'@(TClosure f' c' b') =
         unifyMany (b : Map.elems c) (b' : Map.elems c')
       usubs tf@TFn {} tc@TClosure {} = usubs tc tf
-      usubs (TClosure _ cs tf) tf'@(TFn tc' _ _) =
-        unifyMany [tf, TStruct cs] [tf', tc']
+      usubs tc@(TClosure _ _ tf) tf'@(TFn tc' _ _) =
+        unifyMany [tf, toData tc] [tf', tc']
       usubs (TFn tc tx tb) (TFn tc' tx' tb') = unifyMany [tc, tx, tb] [tc', tx', tb']
-      usubs tf@TFn {} tc@TUnion {} = usubs tc tf
-      usubs (TUnion tcs) tf@TFn {} = do
-        let tc' = TUnion $ Map.map toStruct tcs
-        let tfs' = toFn tc' <$> Map.elems tcs
+      usubs tf@TFn {} tc@TData {} = usubs tc tf
+      usubs (TData n tcs) tf@TFn {} = do
+        let tc' = TData n $ second (Map.map toData) <$> tcs
+        let tfs' = toFn tc' . head . Map.elems . snd <$> tcs
         uncurry unifyMany $ unzip (zip tfs' (repeat tf))
-        where
-          toStruct (TClosure _ cs _) = TStruct cs
-          toStruct _ = error "unreachable"
-          toFn tc (TClosure _ _ (TFn _ tx tb)) = TFn tc tx tb
-          toFn _ _ = error "unreachable"
       usubs t1@TRef {} t2@TData {} = usubs t2 t1
       usubs (TData n _) (TRef n') | n == n' = return $ Substitutions Map.empty
       usubs t1 t2 = throwError $ pack $ "unification failed: " ++ show (t1, t2)
+
+      toData (TClosure f cs _) =
+        let name = Text.concat ["_storage_", f]
+         in TData name [(f, cs)]
+      toData _ = error "unreachable"
+
+      toFn tc (TClosure _ _ (TFn _ tx tb)) = TFn tc tx tb
+      toFn _ _ = error "unreachable"
 
   isVar v (TVar tv) = v == tv
   isVar _ _ = False
@@ -251,6 +241,5 @@ typeOf = \case
   Match _ _ -> error "unreachable"
   Fn cls a b -> TFn cls (snd a) (typeOf b)
   Closure name c f -> TClosure name (Map.map typeOf c) (typeOf f)
-  Union ty disc val -> TUnion ty
   App ty f x -> ty
   EType _ -> Kind

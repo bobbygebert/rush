@@ -144,7 +144,6 @@ monomorphize locals e = case e of
          in (ps,) <$> monomorphize (locals `Set.union` bs) b
   Fn tc (x, tx) b -> Fn tc (x, tx) <$> monomorphize (Set.insert x locals) b
   Closure name cs f -> Closure name cs <$> extract name (typeOf f) locals f
-  Union tys disc val -> Union tys disc <$> monomorphize locals val
   App ty f x -> App ty <$> monomorphize locals f <*> monomorphize locals x
   Data c ty xs -> Data c ty <$> mapM (monomorphize locals) xs
   EType n -> pure $ EType n
@@ -190,7 +189,11 @@ init = \case
   Rush.TTup tys -> TTup <$> mapM init tys
   Rush.TList tx -> TList <$> init tx
   Rush.TVar v s -> pure $ TVar v
-  Rush.TData c s ts -> TData c <$> mapM (\(c, s, ts) -> (c,) <$> mapM init ts) ts
+  Rush.TData c s ts ->
+    TData c . fmap (second $ Map.fromList . zip fnames) <$> ts'
+    where
+      ts' = mapM (\(c', _, ts') -> (c',) <$> mapM init ts') ts
+      fnames = (pack . show <$> [0 ..])
   Rush.TRef n s -> pure $ TRef n
   a Rush.:-> b -> do
     ta <- init a
@@ -214,7 +217,7 @@ closeOverConstant (Rush.Named name c) = ty'
       Rush.CType (n, kind) cs ->
         CType n
           <$> init kind
-          <*> forM cs (\(c, t, ts) -> (c,,) <$> init t <*> mapM init ts)
+          <*> forM cs (\(c, t, ts) -> (c,) <$> mapM init ts)
 
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
@@ -230,24 +233,23 @@ closeOverExpr parent e = case e of
     xs' <- mapM (closeOverExpr parent) xs
     case ty of
       _ Rush.:-> _ -> do
-        let cs = closures xs'
-        let tys = Map.elems cs
-        let ty' = TUnion (closures xs')
-        ensure . (:~ ty') =<< init ty
-        pure $ List ty' (unions cs xs')
+        cname <- (<> ("_" <> parent)) <$> freshName
+        let cs = closureTypes xs'
+        let ty' = TData cname cs
+        pure $ List ty' (toData ty' xs')
       _ -> do
         ty' <- init ty
         mapM_ (ensure . (ty' :~) . typeOf) xs'
         pure $ List ty' xs'
     where
-      closures xs' = Map.fromList $ discriminatedType <$> xs'
+      closureTypes xs' = discriminatedType <$> xs'
       discriminatedType x = case typeOf x of
-        tc@(TClosure f _ _) -> (f, tc)
+        tc@(TClosure f _ _) -> (f, Map.singleton "0" tc)
         _ -> error "unreachable"
-      discriminatedVal x = case typeOf x of
-        TClosure f _ _ -> (f, x)
+      discriminatedVal tc x = case typeOf x of
+        TClosure f _ _ -> Data f tc [x]
         _ -> error "unreachable"
-      unions closures xs' = uncurry (Union closures) . discriminatedVal <$> xs'
+      toData tc xs' = discriminatedVal tc <$> xs'
   Rush.Cons h t -> Cons <$> closeOverExpr parent h <*> closeOverExpr parent t
   Rush.Match xs as -> do
     xs' <- mapM (closeOverExpr parent) xs
@@ -274,22 +276,23 @@ closeOverExpr parent e = case e of
         Rush.Data n ty xs -> Data n <$> init ty <*> mapM closeOverPattern xs
         _ -> error "unreachable"
   Rush.Lambda (x, tx) b -> mdo
-    let name = "_cls_" <> parent
+    let fname = "_cls_" <> parent
+    let cname = "_storage_" <> fname
     tx' <- init tx
     cs <- captures (Set.singleton x) b
     tc <-
       return $
         if Map.size cs == 0
           then TUnit
-          else TStruct (Map.map typeOf cs)
-    f <- define name $ IR.CFn tc (x, tx') b'
-    b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr name b
+          else TData cname [(fname, Map.map typeOf cs)]
+    f <- define fname $ IR.CFn tc (x, tx') b'
+    b' <- with ((x, tx') : Map.toList (Map.map typeOf cs)) $ closeOverExpr fname b
     tp <- TFn <$> freshVar <*> freshVar <*> pure (TFn tc tx' (typeOf b'))
     lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
     return $ case tc of
       TUnit -> f
-      _ -> Closure name cs f
+      _ -> Closure fname cs f
   Rush.App ty f x -> do
     f' <- closeOverExpr parent f
     x' <- closeOverExpr parent x

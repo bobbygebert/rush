@@ -9,6 +9,7 @@ module Generate (buildModule) where
 
 import Control.Monad.Reader (MonadReader (ask, local), ReaderT (runReaderT), asks)
 import Control.Monad.State
+import Data.Bifunctor
 import Data.Char
 import Data.Function
 import Data.List (elemIndex)
@@ -19,6 +20,7 @@ import Data.String
 import Data.Text hiding (filter, foldr, head, length, null, replicate, tail, take, unlines, zip)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
+import GHC.Stack (HasCallStack, callStack, getCallStack)
 import qualified IR as Rush
 import LLVM.AST hiding (Add, alignment, callingConvention, function, functionAttributes, metadata, returnAttributes, type')
 import LLVM.AST.AddrSpace
@@ -44,6 +46,7 @@ data BuildState = BuildState
     types :: Set.Set Name,
     names :: [Text]
   }
+  deriving (Show, Eq)
 
 data Locals = Locals {locals :: Map.Map Text Operand, closure :: Maybe Operand, captures :: [Text]}
   deriving (Show)
@@ -72,7 +75,7 @@ buildItem item@(Rush.Named name constant) =
           =<< global (fromText name)
           <$> asValue ty
           <*> pure (parseIntConst n)
-      Rush.CFn tc@(Rush.TStruct caps) (x, tx) b ->
+      Rush.CFn tc@(Rush.TData _ [(_, caps)]) (x, tx) b ->
         define name
           =<< function (fromText name)
           <$> (zip <$> mapM asArg [tc, tx] <*> pure (fromText <$> ["closure", x]))
@@ -144,7 +147,7 @@ buildExpr e = do
         ( \(i, x, tx) ->
             join $
               store
-                <$> gep dataStorage [int32 0, int32 i] <*> pure 0 <*> mkArg tx x
+                <$> gep dataStorage [int32 0, int32 i] <*> pure 0 <*> pure x
         )
       pure struct
     Rush.List tx xs -> case xs of
@@ -170,26 +173,25 @@ buildExpr e = do
       returnBlock <- block `named` "return"
       phi tried
     Rush.App ty f x -> do
-      f' <- buildExpr f
       x' <- mkArg (Rush.typeOf x) =<< buildExpr x
       case (f, Rush.typeOf f) of
-        (_, Rush.TFn tu@(Rush.TUnion tcs) _ _) -> mdo
-          union <- buildExpr f
-          disc' <- deref =<< gep union [int32 0, int32 0]
-          closureStorage <- gep union [int32 0, int32 1]
+        (_, Rush.TFn tc@(Rush.TData _ [(c, caps)]) _ _) -> do
+          closure <- mkArg tc =<< buildExpr f
+          flip call [(closure, []), (x', [])] =<< mkRef =<< lookup c
+        (_, Rush.TFn tc@(Rush.TData _ tcs) _ _) -> mdo
+          closure <- mkRef =<< buildExpr f
+          disc' <- deref =<< gep closure [int32 0, int32 0]
+          closureStorage <- gep closure [int32 0, int32 1]
           arg <- mkArg (Rush.typeOf x) =<< buildExpr x
           br matchBlock
-          let arms = zip (int64 <$> [0 ..]) (Map.toList tcs)
+          let arms = zip (int64 <$> [0 ..]) (second (head . Map.elems) <$> tcs)
           matchBlock <- block
-          tried <- callUnionClosure returnBlock closureStorage disc' arg [] arms
+          tried <- callClosureSum returnBlock closureStorage disc' arg [] arms
           returnBlock <- block `named` "return"
           phi tried
         (_, tc@(Rush.TClosure f' _ _)) -> do
           c' <- mkArg tc =<< buildExpr f
           flip call [(c', []), (x', [])] =<< mkRef =<< lookup f'
-        (Rush.App _ (Rush.Var f' _) _, Rush.TFn tc@(Rush.TStruct _) _ _) -> do
-          c' <- mkArg tc =<< buildExpr f
-          flip call [(c', []), (x', [])] =<< mkRef =<< lookup ("_cls_" <> f')
         (_, Rush.TFn Rush.TUnit tx tb) -> flip call [(x', [])] =<< mkRef =<< buildExpr f
         (f, ty) -> error $ "unreachable: " ++ show (f, ty)
     c@(Rush.Closure name caps _) -> do
@@ -201,20 +203,6 @@ buildExpr e = do
         fieldPtr <- gep closureStorage [int32 0, int32 i]
         store fieldPtr 0 fieldVal
       pure closureStorage
-    u@(Rush.Union tcs disc val) -> do
-      unionStorage <- do
-        tc' <- asValue (Rush.typeOf u)
-        alloca tc' Nothing 0
-      disc' <- gep unionStorage [int32 0, int32 0]
-      closure <-
-        join
-          ( bitcast
-              <$> gep unionStorage [int32 0, int32 1]
-              <*> (asPtr <$> asField (Rush.typeOf val))
-          )
-      store disc' 0 $ fromJust $ Map.lookup disc (Map.fromList (zip (Map.keys tcs) (int32 <$> [0 ..])))
-      store closure 0 =<< mkVal (Rush.typeOf val) =<< buildExpr val
-      pure unionStorage
     e -> error $ "unreachable: " ++ show e
 
 buildMatchArms ::
@@ -227,7 +215,7 @@ buildMatchArms ::
 buildMatchArms _ _ tried [] = do
   panic
   return tried
-buildMatchArms returnBlock xs tried ((ps, b) : arms) = trace (show $ (ps, b) : arms) $ mdo
+buildMatchArms returnBlock xs tried ((ps, b) : arms) = mdo
   thisBranch <- buildMatchArm returnBlock nextBlock xs ps b
   nextBlock <- block
   buildMatchArms returnBlock xs (thisBranch : tried) arms
@@ -302,7 +290,7 @@ buildMatchArms returnBlock xs tried ((ps, b) : arms) = trace (show $ (ps, b) : a
       ty -> error $ "unreachable: " ++ show ty
     buildMatchArm _ _ x p e = error $ "unreachable: buildMatchArm .. " ++ show (x, p, e)
 
-callUnionClosure ::
+callClosureSum ::
   (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadFix m, MonadModuleBuilder m) =>
   Name ->
   Operand ->
@@ -311,37 +299,36 @@ callUnionClosure ::
   [(Operand, Name)] ->
   [(Operand, (Text, Rush.Type))] ->
   m [(Operand, Name)]
-callUnionClosure returnBlock storage disc arg tried (arm : arms) = mdo
+callClosureSum returnBlock storage disc arg tried (arm : arms) = mdo
   thisBranch <- buildMatchArm returnBlock nextBlock storage disc arg arm
   nextBlock <- block
-  callUnionClosure returnBlock storage disc arg (thisBranch : tried) arms
+  callClosureSum returnBlock storage disc arg (thisBranch : tried) arms
   where
     buildMatchArm returnBlock nextBlock storage disc arg (i, (f, ty)) = mdo
       matches <- icmp EQ disc i
       condBr matches callBlock nextBlock
       callBlock <- block
-      closure <- join (bitcast <$> gep storage [int32 0, int32 0] <*> (asPtr <$> asField ty))
+      closure <- (mkRef <=< join) $ bitcast storage <$> (asPtr <$> asStorage ty)
       result <- flip call [(closure, []), (arg, [])] =<< mkRef =<< lookup f
       br returnBlock
       return (result, callBlock)
-callUnionClosure _ _ _ _ tried [] = do
+callClosureSum _ _ _ _ tried [] = do
   panic
   return tried
 
 listType :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 listType tx = do
-  state <- get
   let ty = case tx of
         Rush.TFn tc _ _ -> tc
         _ -> tx
   name <- fromText . ("List " <>) . toStrict . ppll <$> asValue ty
   tx' <- asValue tx
-  ty' <-
-    if not $ name `Set.member` types state
-      then typedef name $ Just $ StructureType False [tx', asPtr (NamedTypeReference name)]
-      else pure $ NamedTypeReference name
-  put state {types = Set.insert name (types state)}
-  pure ty'
+  undefined <- state $ \state ->
+    let state' = state {types = Set.insert name (types state)}
+     in (types state /= types state', state')
+  if undefined
+    then typedef name $ Just $ StructureType False [tx', asPtr (NamedTypeReference name)]
+    else pure $ NamedTypeReference name
 
 dataType ::
   (MonadModuleBuilder m, MonadState BuildState m) =>
@@ -356,13 +343,12 @@ dataType name cs = do
     [(_, ts)] -> StructureType False <$> mapM asField ts
     cs -> pure $ StructureType False [i32, ArrayType (toEnum requiredSizeInWords) i64]
   let name' = fromText name
-  state <- get
-  ty' <-
-    if not $ name' `Set.member` types state
-      then typedef name' $ Just ty
-      else pure $ NamedTypeReference name'
-  put state {types = Set.insert name' (types state)}
-  pure ty'
+  undefined <- state $ \state ->
+    let state' = state {types = Set.insert name' (types state)}
+     in (types state /= types state', state')
+  if undefined
+    then typedef name' $ Just ty
+    else pure $ NamedTypeReference name'
 
 asValue :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
 asValue ty@Rush.TList {} = asPtr <$> asStorage ty
@@ -371,19 +357,14 @@ asValue ty@Rush.TRef {} = asPtr <$> asStorage ty
 asValue ty = asStorage ty
 
 asStorage :: (MonadModuleBuilder m, MonadState BuildState m) => Rush.Type -> m Type
-asStorage = \case
+asStorage t = case t of
   Rush.TInt -> pure i64
   Rush.TTup tys -> StructureType False <$> mapM asValue tys
   Rush.TList tx -> listType tx
   Rush.TVar {} -> error "unreachable: asValue TVar"
-  Rush.TStruct fields -> StructureType False <$> mapM asField (Map.elems fields)
-  Rush.TClosure _ caps _ -> StructureType False <$> mapM asField (Map.elems caps)
-  Rush.TUnion tys -> pure $ StructureType False [i32, ArrayType (toEnum requiredSizeInWords) i64]
-    where
-      requiredSizeInWords = foldr max 0 (sizeInWords <$> Map.elems tys)
-  Rush.TFn c@Rush.TUnion {} a b -> asValue c
-  Rush.TFn c@Rush.TStruct {} a b -> asValue c
-  Rush.TData n cs -> dataType n cs
+  Rush.TClosure f cs _ -> dataType (fromText $ "_storage_" <> f) [("0", Map.elems cs)]
+  Rush.TFn c@Rush.TData {} a b -> asValue c
+  Rush.TData n cs -> dataType n (fmap (second $ fmap snd . Map.toAscList) cs)
   Rush.TRef n -> pure $ NamedTypeReference (fromText n)
   ty -> error $ "unreachable: " ++ show ty
 
@@ -393,11 +374,7 @@ sizeInWords = \case
   Rush.TTup tys -> sum $ sizeInWords <$> tys
   Rush.TList tx -> sizeInWords tx + 1
   Rush.TVar {} -> error "unreachable: asValue TVar"
-  Rush.TStruct fields -> sum $ sizeInWords <$> Map.elems fields
   Rush.TClosure _ caps _ -> sum $ sizeInWords <$> Map.elems caps
-  Rush.TUnion tys -> 1 + sum (sizeInWords <$> Map.elems tys)
-  Rush.TFn c@Rush.TUnion {} a b -> sizeInWords c
-  Rush.TFn c@Rush.TStruct {} a b -> sizeInWords c
   Rush.TData _ cs -> 1 + foldr max 0 (sum . (sizeInWords <$>) . snd <$> cs)
   Rush.TRef {} -> 1
   ty -> error $ "unreachable: " ++ show ty
@@ -452,8 +429,6 @@ passedByValue :: Rush.Type -> Bool
 passedByValue = \case
   Rush.TTup {} -> False
   Rush.TList {} -> False
-  Rush.TStruct {} -> False
-  Rush.TUnion {} -> False
   Rush.TClosure {} -> False
   Rush.TData {} -> False
   Rush.TRef {} -> False
@@ -477,25 +452,22 @@ bind :: (MonadReader Locals m) => Map.Map Text Rush.Type -> Operand -> m a -> m 
 bind caps op = local (\ctx -> ctx {closure = Just op, captures = fst <$> Map.toAscList caps})
 
 lookup :: (MonadReader Locals m, MonadState BuildState m, MonadIRBuilder m, MonadModuleBuilder m) => Text -> m Operand
-lookup name =
-  do
-    global <- gets $ Map.lookup name . globals
-    local <- asks $ Map.lookup name . locals
-    closure <- asks closure
-    captureIndex <- asks ((fmap toEnum . elemIndex name) . captures)
-    capture <- mapM (\(c, i) -> flip load 0 =<< gep c [int32 0, int32 i]) $ (,) <$> closure <*> captureIndex
-    return $ (local <|> capture <|> global) & fromMaybe (error $ "undefined: " <> unpack name)
+lookup name = do
+  global <- gets $ Map.lookup name . globals
+  local <- asks $ Map.lookup name . locals
+  closure <- asks closure
+  captureIndex <- asks ((fmap toEnum . elemIndex name) . captures)
+  capture <- mapM (\(c, i) -> flip load 0 =<< gep c [int32 0, int32 i]) $ (,) <$> closure <*> captureIndex
+  return $ (local <|> capture <|> global) & fromMaybe (error $ "undefined: " <> unpack name)
 
 declare :: (MonadState BuildState m, MonadModuleBuilder m) => Text -> Rush.Type -> m ()
 declare name (Rush.TFn tc tx tb) = do
   ty <- asPtr <$> (FunctionType <$> asValue tb <*> txs <*> pure False)
   let decl = ConstantOperand (GlobalReference ty (fromText name))
-  state <- get
-  put (state {globals = Map.insert name decl (globals state)})
+  state $ \state -> ((), state {globals = Map.insert name decl (globals state)})
   where
     txs = mapM asArg $ case tc of
-      c@Rush.TUnion {} -> [tc, tx]
-      c@Rush.TStruct {} -> [tc, tx]
+      c@Rush.TData {} -> [tc, tx]
       Rush.TUnit -> [tx]
       _ -> error "unreachable"
 declare _ _ = pure ()
@@ -503,17 +475,13 @@ declare _ _ = pure ()
 define :: (MonadState BuildState m) => Text -> m Operand -> m ()
 define name op = do
   op <- op
-  state <- get
-  put (state {globals = Map.insert name op (globals state)})
+  state $ \state -> ((), state {globals = Map.insert name op (globals state)})
 
 freshNames :: [Text]
 freshNames = pack . ("__" ++) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
 fresh :: (MonadState BuildState m) => m Text
-fresh = do
-  state <- get
-  put $ state {names = tail $ names state}
-  return $ head $ names state
+fresh = state $ \state -> (head $ names state, state {names = tail $ names state})
 
 withPanic :: (MonadModuleBuilder m, MonadReader Locals m) => m b -> m b
 withPanic build = do
