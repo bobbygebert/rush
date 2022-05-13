@@ -3,7 +3,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TupleSections #-}
 
 module Monomorphize where
@@ -48,11 +47,11 @@ ir =
       ty <- closeOverConstant c
       withGlobal [(n, ty)] $ closeOver cs
 
-type Build = InferT (State BuildState) Type (Definitions Type)
+type Build = InferT BuildState Type (Definitions Type)
 
 data BuildState = BuildState {definitions :: [IR.Named Type], names :: [Text], constraints :: [Constraint Type]}
 
-instance TypeVarStream (State BuildState) Type where
+instance TypeVarStream BuildState Type where
   freshTypeVar span = do
     state <- get
     let n : ns = names state
@@ -62,12 +61,11 @@ instance TypeVarStream (State BuildState) Type where
 runBuild :: Build a -> (a, [Constraint Type])
 runBuild =
   either (error . show) id
-    . flip evalState (BuildState [] freshNames [])
-    . flip runReaderT (Definitions (Context Map.empty) (Context Map.empty))
-    . runExceptT
-    . runWriterT
+    . runInferT
+      (BuildState [] freshNames [])
+      (Definitions (Context Map.empty) (Context Map.empty))
 
-type Generate = InferT (State GenerateState) Type (Definitions Type)
+type Generate = InferT GenerateState Type (Definitions Type)
 
 data GenerateState = GenerateState
   { generated :: Map.Map (Text, Type) (IR.Constant Type),
@@ -76,7 +74,7 @@ data GenerateState = GenerateState
   }
   deriving (Show)
 
-instance TypeVarStream (State GenerateState) Type where
+instance TypeVarStream GenerateState Type where
   freshTypeVar span = do
     state <- get
     let n : ns = numbers state
@@ -209,10 +207,12 @@ closeOverConstant (Rush.Named name c) = ty'
       Rush.CNum n ty -> IR.CNum n <$> init ty
       Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((const <$>) . closeOverExpr c . Rush.unConst) xs
       Rush.CLambda (x, tx) b -> do
-        tf <- TFn TUnit <$> init tx <*> init (Rush.typeOf b)
-        let tx = tf & (\case TFn _ tx' _ -> tx'; _ -> error "unreachable")
-        b' <- with [(name, tf), (x, tx)] $ closeOverExpr name b
-        return $ IR.CFn TUnit (x, tx) b'
+        tx' <- init tx
+        tb' <- init (Rush.typeOf b)
+        let tf = TFn TUnit tx' tb'
+        b' <- with [(name, tf), (x, tx')] $ closeOverExpr name b
+        ensure $ typeOf b' :~ tb'
+        return $ IR.CFn TUnit (x, tx') b'
 
 closeOverExpr :: Text -> Rush.Expr Rush.Type -> Build (Expr Type)
 closeOverExpr parent e = case e of
@@ -240,10 +240,10 @@ closeOverExpr parent e = case e of
       closureTypes xs' = discriminatedType <$> xs'
       discriminatedType x = case typeOf x of
         tc@(TData f _) -> (f, OMap.singleton ("0", tc))
-        _ -> error "unreachable"
+        x -> error $ "unreachable: " ++ show x
       discriminatedVal tc x = case typeOf x of
         TData f _ -> Data f tc (OMap.fromList [("0", x)])
-        _ -> error "unreachable"
+        ty -> error $ "unreachable: " ++ show ty
       toData tc xs' = discriminatedVal tc <$> xs'
   Rush.Cons h t -> Cons <$> closeOverExpr parent h <*> closeOverExpr parent t
   Rush.Match xs as -> do
@@ -272,22 +272,23 @@ closeOverExpr parent e = case e of
           let toMap = OMap.fromList . zip (pack . show <$> [0 ..])
            in Data n <$> init ty <*> (toMap <$> mapM closeOverPattern xs)
         _ -> error "unreachable"
-  Rush.Lambda (x, tx) b -> mdo
+  Rush.Lambda (x, tx) b -> do
     let fname = "_cls_" <> parent
     let cname = fname
     tx' <- init tx
     cs <- OMap.fromList . Map.toList <$> captures (Set.singleton x) b
     let tcs = typeOf . snd <$> OMap.assocs cs
-    tc <-
-      return $
-        if OMap.size cs == 0
-          then TUnit
-          else TData cname [(fname, OMap.fromList (second typeOf <$> OMap.assocs cs))]
+    let tc =
+          if OMap.size cs == 0
+            then TUnit
+            else TData cname [(fname, OMap.fromList (second typeOf <$> OMap.assocs cs))]
+    tb <- freshVar
+    let tf = TFn tc tx' tb
+    b' <- with ((fname, tf) : (x, tx') : (second typeOf <$> OMap.assocs cs)) $ closeOverExpr fname b
+    ensure $ tb :~ typeOf b'
     f <- define fname $ IR.CFn tc (x, tx') b'
-    b' <- with ((x, tx') : (second typeOf <$> OMap.assocs cs)) $ closeOverExpr fname b
-    tp <- TFn <$> freshVar <*> freshVar <*> pure tc
-    lookup parent >>= ensure . (:~ tp)
     ensure $ typeOf f :~ TFn tc tx' (typeOf b')
+    -- TODO: ensure parent return type matches.
     return $ case tc of
       TUnit -> f
       _ -> Data fname tc cs
@@ -364,7 +365,7 @@ freshVar :: Build Type
 freshVar = TVar <$> freshName
 
 define :: Text -> IR.Constant Type -> Build (Expr Type)
-define name val = do
+define name val = trace ("defining: " ++ show (name, val)) $ do
   state <- get
   put state {definitions = IR.Named name val : definitions state}
   return $ Var name (typeOf $ unConst val)

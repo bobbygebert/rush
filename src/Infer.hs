@@ -20,6 +20,7 @@ import Data.List (intercalate, partition)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, partition, tail, unlines, zip)
+import Debug.Trace
 import Span
 
 data Constraint t
@@ -31,9 +32,9 @@ infix 1 :~
 instance (Show t) => Show (Constraint t) where
   show (a :~ b) = show a ++ " ~ " ++ show b
 
-type InferT m t c = WriterT [Constraint t] (ExceptT TypeError (ReaderT c m))
+type InferT s t c = WriterT [Constraint t] (ExceptT TypeError (ReaderT c (State s)))
 
-type Infer t = InferT (State (FreshTypeVarStream t)) t (Definitions t)
+type Infer t = InferT (FreshTypeVarStream t) t (Definitions t)
 
 data Context t = Context {defs :: Map.Map Name t}
   deriving (Show)
@@ -62,6 +63,13 @@ class Template a where
     a ->
     InferT m t c a
 
+runInferT :: s -> c -> InferT s t c a -> Either TypeError (a, [Constraint t])
+runInferT state env =
+  flip evalState state
+    . flip runReaderT env
+    . runExceptT
+    . runWriterT
+
 runInfer :: [Span -> t] -> Definitions t -> Infer t a -> Either TypeError (a, [Constraint t])
 runInfer typeVars env =
   flip evalState typeVars
@@ -70,21 +78,22 @@ runInfer typeVars env =
     . runWriterT
 
 solveConstraints :: (Eq t, Unify t, Refine t t, Show t) => [Constraint t] -> Either TypeError (Substitutions t)
-solveConstraints constraints = runExcept $ solve (Substitutions Map.empty) constraints
+solveConstraints constraints = runExcept substitutions
   where
-    solve ss cs = do
+    substitutions = solve (Substitutions Map.empty) constraints
+    solve ss@(Substitutions ss') cs = trace (unlines $ (show <$> Map.toList ss') ++ (show <$> cs)) $ do
       let isVague (a :~ b) = (/=) <$> unifyingSubstitutions a b <*> unifyingSubstitutions b a
       (vague, strict) <-
         bimap (snd <$>) (snd <$>)
           . partition fst
           <$> (zip <$> mapM isVague cs <*> pure cs)
       case strict ++ vague of
-        [] -> return ss
+        [] -> trace ("substitutions:\n" ++ unlines (show <$> Map.toList ss')) return ss
         (t :~ t') : cs' -> do
           ss' <- unifyingSubstitutions t t'
           solve (ss' `compose` ss) (apply ss' cs')
 
-ensure :: Monad m => Constraint t -> InferT m t c ()
+ensure :: Constraint t -> InferT s t c ()
 ensure c = tell [c]
 
 unifyMany :: (Unify t, Refine t t, Show t) => [t] -> [t] -> Solve (Substitutions t)
@@ -116,25 +125,25 @@ lookup v = do
 
 type FreshTypeVarStream t = [Span -> t]
 
-instance TypeVarStream (State (FreshTypeVarStream t)) t where
+instance TypeVarStream (FreshTypeVarStream t) t where
   freshTypeVar span = do
     stream <- get
     put $ tail stream
     return $ head stream span
 
-fresh :: (TypeVarStream m t, Monad m) => Span -> InferT m t c t
+fresh :: (TypeVarStream s t) => Span -> InferT s t c t
 fresh = freshTypeVar
 
-class (Monad m) => TypeVarStream m t where
-  freshTypeVar :: Span -> InferT m t c t
+class TypeVarStream s t where
+  freshTypeVar :: Span -> InferT s t c t
 
 class Globals t g where
   globals :: g -> Context t
-  withGlobal :: (Monad m) => [(Name, t)] -> InferT m t g a -> InferT m t g a
+  withGlobal :: [(Name, t)] -> InferT s t g a -> InferT s t g a
 
 class Locals t l where
   locals :: l -> Context t
-  with :: (Monad m) => [(Name, t)] -> InferT m t l a -> InferT m t l a
+  with :: [(Name, t)] -> InferT s t l a -> InferT s t l a
 
 instance Globals t (Definitions t) where
   globals = global

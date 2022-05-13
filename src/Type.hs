@@ -36,7 +36,11 @@ instance Show Type where
     TVar txt _ -> "'" ++ unpack txt
     TData n _ _ -> unpack n
     TRef n _ -> unpack n
-    a :-> b -> show a ++ " -> " ++ show b
+    a :-> b -> a' ++ " -> " ++ show b
+      where
+        a' = case a of
+          c :-> d -> "(" ++ show a ++ ")"
+          _ -> show a
     Kind {} -> "*"
 
 infixr 9 :->
