@@ -12,13 +12,13 @@ import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
 import Expression
+import Rush.Type
 import Span
 import Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Megaparsec
 import Text.Megaparsec
 import Text.Megaparsec.Char
-import Type
 import Prelude hiding (span, unlines)
 
 class Spanned a

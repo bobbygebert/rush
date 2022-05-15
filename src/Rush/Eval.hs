@@ -15,9 +15,9 @@ import Data.Text hiding (foldr, foldr1, span)
 import Debug.Trace
 import Expression
 import Infer (Context (Context, defs))
+import Rush.Type hiding (spec)
 import Span
 import Test.Hspec as Hspec
-import Type hiding (spec)
 import Prelude hiding (lookup, span)
 
 data Constant t

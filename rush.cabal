@@ -34,8 +34,8 @@ library
       Rush.Item
       Rush.Monomorphize
       Rush.Parser
+      Rush.Type
       Span
-      Type
   other-modules:
       Paths_rush
   hs-source-dirs:

@@ -29,8 +29,8 @@ import qualified Expression as Rush
 import IR
 import Infer
 import qualified Rush.Eval as Rush
+import qualified Rush.Type as Rush
 import Span
-import qualified Type as Rush
 import Prelude hiding (const, init, lookup)
 
 ir :: [Rush.Named Rush.Type] -> [IR.Named Type]

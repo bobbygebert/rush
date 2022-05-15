@@ -25,9 +25,9 @@ import Rush.Eval
 import Rush.Item as Item
 import Rush.Monomorphize (monomorphize)
 import Rush.Parser (parseModule)
+import Rush.Type
 import Span
 import System.FilePath
-import Type
 
 build :: FilePath -> Text -> Either [Text] Text
 build path source =

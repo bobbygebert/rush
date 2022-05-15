@@ -4,7 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Type (spanOf, withSpan, Type (..)) where
+module Rush.Type (spanOf, withSpan, Type (..)) where
 
 import Control.Monad
 import Control.Monad.Except

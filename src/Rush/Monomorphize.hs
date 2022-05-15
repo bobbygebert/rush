@@ -18,7 +18,7 @@ import Debug.Trace
 import Expression
 import Infer
 import Rush.Eval
-import Type
+import Rush.Type
 import Prelude hiding (lookup)
 
 type Monomorphize = InferT MonomorphizeState Type (Definitions Type)

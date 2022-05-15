@@ -17,9 +17,9 @@ import Debug.Trace
 import Expression hiding (Type)
 import Infer hiding (Type)
 import qualified Infer
+import Rush.Type
 import Span
 import Test.Hspec
-import Type
 import Prelude hiding (lookup, span)
 
 data Item s = Item {name :: Text, ty :: s, value :: Term s}

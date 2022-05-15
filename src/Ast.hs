@@ -5,7 +5,7 @@ module Ast (Ast (..)) where
 
 import Data.Text
 import Expression
-import Type
+import Rush.Type
 
 data Ast c
   = Constant (Text, c) (Expr c)
