@@ -18,6 +18,7 @@ import qualified Data.Function as Functor
 import Data.Functor
 import Data.List hiding (init, lookup)
 import qualified Data.Map as Map
+import Data.Map.Ordered hiding (lookup)
 import qualified Data.Map.Ordered as OMap
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
@@ -40,6 +41,7 @@ ir =
     . solve
     . runBuild
     . (unpack <=< closeOver)
+    . (\a -> trace ("building: \n" ++ unlines (show <$> a)) a)
   where
     unpack = Functor.const $ gets $ reverse . definitions
     closeOver [] = return ()
@@ -63,12 +65,12 @@ runBuild =
   either (error . show) id
     . runInferT
       (BuildState [] freshNames [])
-      (Definitions (Context Map.empty) (Context Map.empty))
+      (Definitions (Context OMap.empty) (Context OMap.empty))
 
 type Generate = InferT GenerateState Type (Definitions Type)
 
 data GenerateState = GenerateState
-  { generated :: Map.Map (Text, Type) (IR.Constant Type),
+  { generated :: OMap (Text, Type) (IR.Constant Type),
     templates :: Context (IR.Constant Type),
     numbers :: [Text]
   }
@@ -85,15 +87,15 @@ runGenerate :: Context Type -> Context (IR.Constant Type) -> Generate [IR.Named 
 runGenerate types templates =
   solve
     . either (error . show) id
-    . flip evalState (GenerateState Map.empty templates (pack . show <$> [0 ..]))
-    . flip runReaderT Definitions {local = Context Map.empty, global = types}
+    . flip evalState (GenerateState OMap.empty templates (pack . show <$> [0 ..]))
+    . flip runReaderT Definitions {local = Context OMap.empty, global = types}
     . runExceptT
     . runWriterT
     . unpack
   where
     unpack as = do
       as' <- as
-      gs <- gets $ Map.toList . generated
+      gs <- gets $ OMap.assocs . generated
       let gs' = (\((name, ty), c) -> IR.Named name c) <$> gs
       return $ gs' ++ as'
 
@@ -110,10 +112,10 @@ generate cs =
         IR.CData {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
-    types = Map.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
+    types = OMap.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
     (templates, targets) =
       first
-        (Map.fromList . fmap (\(IR.Named n c) -> (n, c)))
+        (OMap.fromList . fmap (\(IR.Named n c) -> (n, c)))
         (templatesAndTargets cs)
     templatesAndTargets =
       partition
@@ -162,7 +164,7 @@ extract name ty locals defaultExpr
         ensure $ ty' :~ ty
         put
           state
-            { generated = Map.insert (mangled, ty) c (generated state),
+            { generated = ((mangled, ty), c) <| generated state,
               numbers = tail (numbers state)
             }
         pure $ Var mangled ty
@@ -176,7 +178,7 @@ solve (items, constraints) =
 template :: Text -> Generate (Maybe (IR.Constant Type))
 template v = do
   Context templates <- gets templates
-  return $ Map.lookup v templates
+  return $ OMap.lookup v templates
 
 -- TODO: merge spans?
 init :: Rush.Type -> Build Type

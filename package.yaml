@@ -24,6 +24,7 @@ library:
   dependencies:
   - bytestring
   - containers
+  - data-default
   - filepath
   - hspec
   - hspec-megaparsec

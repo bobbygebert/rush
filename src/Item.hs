@@ -9,6 +9,8 @@ import qualified Ast
 import Control.Monad
 import Data.Functor
 import qualified Data.Map as Map
+import Data.Map.Ordered hiding (lookup)
+import qualified Data.Map.Ordered as OMap
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, span, unlines, unwords, zip)
 import Debug.Trace
@@ -84,10 +86,10 @@ constructors (Item _ _ term) = case term of
             [] -> Data c dty args
             args -> desugarFnArms [(args, Data c dty args)]
 
-constructorTypes :: Item Span -> Map.Map Text Type
+constructorTypes :: Item Span -> OMap Text Type
 constructorTypes (Item _ _ term) = case term of
-  Expr {} -> Map.empty
-  Type (ty, sty) cs -> Map.fromList (constructorType <$> cs)
+  Expr {} -> OMap.empty
+  Type (ty, sty) cs -> OMap.fromList (constructorType <$> cs)
     where
       cs' = (\(Constructor c s ts) -> (c, s, ts)) <$> cs
       constructorType (Constructor c sc ts) =
@@ -98,7 +100,7 @@ freshNames = pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
 typeItem :: Context Type -> Item Span -> Either TypeError (Item Type)
 typeItem context (Item.Item n s i) =
-  let infer = runInfer freshTypeVars Definitions {local = Context Map.empty, global = context}
+  let infer = runInfer freshTypeVars Definitions {local = Context OMap.empty, global = context}
       solve (item, cs) = trace ("solving: " ++ show item ++ "\n" ++ unlines (show <$> cs)) flip apply item <$> solveConstraints cs
       normalize item@(Item.Item _ ty _) = trace ("solved: " ++ show (apply (Substitutions ss) item)) apply (Substitutions ss) item
         where
@@ -224,25 +226,25 @@ spec :: SpecWith ()
 spec = describe "Type" $ do
   describe "typeItem" $ do
     it "infers type of Num to be TInt" $ do
-      let c = Context Map.empty
+      let c = Context OMap.empty
       let i = Item "n" s0 (Item.Expr $ Num "1" s1)
       let o = Item "n" (TInt s0) (Item.Expr $ Num "1" (TInt s1))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Var from Context" $ do
-      let c = Context $ Map.fromList [("v", TInt s1)]
+      let c = Context $ OMap.fromList [("v", TInt s1)]
       let i = Item "n" s0 (Item.Expr $ Var "v" s1)
       let o = Item "n" (TInt s0) (Item.Expr $ Var "v" (TInt s1))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Add Expression" $ do
-      let c = Context Map.empty
+      let c = Context OMap.empty
       let i = Item "n" s0 (Item.Expr $ Add (Num "1" s1) (Num "2" s2))
       let o = Item "n" (TInt s0) (Item.Expr $ Add (Num "1" (TInt s1)) (Num "2" (TInt s2)))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Lambda Expression" $ do
-      let c = Context Map.empty
+      let c = Context OMap.empty
       let i = Item "f" s0 (Item.Expr $ Lambda ("x", s1) (Num "2" s2))
       let o =
             Item
@@ -256,7 +258,7 @@ spec = describe "Type" $ do
       typeItem c i `shouldBe` Right o
 
     it "infers type of Match Expression" $ do
-      let c = Context $ Map.fromList [("x", TInt s4)]
+      let c = Context $ OMap.fromList [("x", TInt s4)]
       let i = Item "f" s0 (Item.Expr $ Match [Var "x" s1] [([Num "1" s2], Num "2" s3)])
       let o =
             Item
@@ -270,7 +272,7 @@ spec = describe "Type" $ do
       typeItem c i `shouldBe` Right o
 
     it "infers type of Tup" $ do
-      let c = Context Map.empty
+      let c = Context OMap.empty
       let i =
             Item
               "f"
@@ -290,7 +292,7 @@ spec = describe "Type" $ do
       typeItem c i `shouldBe` Right o
 
     it "infers type of App Expression" $ do
-      let c = Context Map.empty
+      let c = Context OMap.empty
       let i =
             Item
               "f"
@@ -314,7 +316,7 @@ spec = describe "Type" $ do
       typeItem c i `shouldBe` Right o
 
     it "unifies Tup types" $ do
-      let c = Context $ Map.fromList [("g", TTup [TInt s0, TInt s1] :-> TInt s2)]
+      let c = Context $ OMap.fromList [("g", TTup [TInt s0, TInt s1] :-> TInt s2)]
       let i =
             Item
               "f"

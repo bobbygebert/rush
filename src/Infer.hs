@@ -15,9 +15,12 @@ import qualified Control.Monad.Reader as Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Bifunctor
+import Data.Default
 import Data.Functor
 import Data.List (intercalate, partition)
 import qualified Data.Map as Map
+import Data.Map.Ordered
+import qualified Data.Map.Ordered as OMap
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, intercalate, partition, tail, unlines, zip)
 import Debug.Trace
@@ -36,8 +39,14 @@ type InferT s t c = WriterT [Constraint t] (ExceptT TypeError (ReaderT c (State 
 
 type Infer t = InferT (FreshTypeVarStream t) t (Definitions t)
 
-data Context t = Context {defs :: Map.Map Name t}
+data Context t = Context {defs :: OMap Name t}
   deriving (Show)
+
+extend :: Name -> t -> Context t -> Context t
+extend n t c = c {defs = defs c >| (n, t)}
+
+instance Default (Context t) where
+  def = Context OMap.empty
 
 data Definitions t = Definitions {local :: Context t, global :: Context t}
   deriving (Show)
@@ -117,8 +126,8 @@ lookup ::
   InferT m t c t
 lookup v = do
   env <- ask
-  local <- asks (Map.lookup v . defs . locals)
-  global <- instantiate =<< asks (Map.lookup v . defs . globals)
+  local <- asks (OMap.lookup v . defs . locals)
+  global <- instantiate =<< asks (OMap.lookup v . defs . globals)
   case local <|> global of
     Just t -> pure t
     Nothing -> throwError . pack $ show v ++ " is undefined in: " ++ show env
@@ -149,15 +158,13 @@ instance Globals t (Definitions t) where
   globals = global
   withGlobal vs = Reader.local (extend vs)
     where
-      extend vs c = c {global = Context $ foldr extend' (defs $ global c) vs}
-      extend' (v, t) = Map.insert v t . Map.delete v
+      extend vs c = c {global = Context $ foldr (flip (>|)) (defs $ global c) vs}
 
 instance Locals t (Definitions t) where
   locals = local
   with vs = Reader.local (extend vs)
     where
-      extend vs c = c {local = Context $ foldr extend' (defs $ local c) vs}
-      extend' (v, t) = Map.insert v t . Map.delete v
+      extend vs c = c {local = Context $ foldr (flip (>|)) (defs $ local c) vs}
 
 instance (Functor f, Refine a t) => Refine (f a) t where
   apply ss = fmap (apply ss)

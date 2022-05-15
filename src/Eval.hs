@@ -8,6 +8,8 @@ module Eval (eval, spec, unConst, Constant (..), Named (..)) where
 
 import Control.Monad (msum)
 import qualified Data.Map as Map
+import Data.Map.Ordered hiding (lookup)
+import qualified Data.Map.Ordered as OMap
 import Data.Maybe
 import Data.Text hiding (foldr, foldr1, span)
 import Debug.Trace
@@ -38,7 +40,7 @@ instance Traversable Named where
 eval :: Context (Constant Type) -> Expr Type -> Constant Type
 eval ctx e =
   let get = lookup ctx
-      extend (x, c) = Context . Map.insert x c . Map.delete x . defs
+      extend (x, c) = Context . (>| (x, c)) . defs
       evalBinOp op a b = case (eval ctx a, eval ctx b) of
         (CNum a ty@TInt {}, CNum b TInt {}) ->
           let c = pack . show $ read (unpack a) `op` read (unpack b)
@@ -88,16 +90,16 @@ with :: (Text, c) -> Context c -> (Context c -> f) -> f
 with (x, c) ctx f = f (extend (x, c) ctx)
 
 extend :: (Text, c) -> Context c -> Context c
-extend (x, c) = Context . Map.insert x c . Map.delete x . defs
+extend (x, c) = Context . (>| (x, c)) . defs
 
 unConst :: Constant Type -> Expr Type
 unConst = \case
   CLambda x b -> Lambda x b
   CNum n ty -> Num n ty
-  _ -> error "unreachable"
+  CData c td xs -> Data c td (unConst <$> xs)
 
 lookup :: Context (Constant Type) -> Text -> Constant Type
-lookup ctx = fromMaybe (error $ show ctx) . flip Map.lookup (defs ctx)
+lookup ctx = fromMaybe (error $ show ctx) . flip OMap.lookup (defs ctx)
 
 {-
  ____
@@ -119,7 +121,7 @@ spec = describe "Eval" $ do
   it "evaluates application" $ do
     let ctx = [("f", CLambda ("x", TInt s0) (Add (Var "x" (TInt s1)) (Var "x" (TInt s2))))]
     eval
-      (Context $ Map.fromList ctx)
+      (Context $ OMap.fromList ctx)
       (App (TInt s0) (Var "f" (TInt s1 :-> TInt s2)) (Num "2" (TInt s3)))
       `shouldBe` CNum "4" (TInt s0)
 
@@ -155,7 +157,7 @@ spec = describe "Eval" $ do
       )
       `shouldBe` CNum "3" (TInt s4)
 
-emptyContext = Context {defs = Map.empty}
+emptyContext = Context {defs = OMap.empty}
 
 s0 = span "mod" (8, 8) (8, 8)
 
