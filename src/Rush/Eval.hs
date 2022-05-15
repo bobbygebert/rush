@@ -1,10 +1,7 @@
-{-# LANGUAGE DeriveFoldable #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
 
-module Rush.Eval (eval, spec, unItem, Item (..), Named (..)) where
+module Rush.Eval (eval, spec, unItem) where
 
 import Control.Monad (msum)
 import qualified Data.Map as Map
@@ -15,39 +12,24 @@ import Data.Text hiding (foldr, foldr1, span)
 import Debug.Trace
 import Infer (Context (Context, defs))
 import Rush.Expression
+import Rush.Item (Item)
+import qualified Rush.Item as Item
 import Rush.Type hiding (spec)
 import Span
 import Test.Hspec as Hspec
 import Prelude hiding (lookup, span)
-
-data Item t
-  = CNum Text t
-  | CData Text t [Item t]
-  | CLambda (Text, t) (Expr t)
-  deriving (Show, Eq, Functor, Foldable)
-
-data Named t = Named Text (Item t)
-  deriving (Show, Eq, Functor, Foldable)
-
-instance Traversable Item where
-  traverse f (CNum n ty) = CNum n <$> f ty
-  traverse f (CData c ty xs) = CData c <$> f ty <*> traverse (traverse f) xs
-  traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
-
-instance Traversable Named where
-  traverse f (Named n c) = Named n <$> traverse f c
 
 eval :: Context (Item Type) -> Expr Type -> Item Type
 eval ctx e =
   let get = lookup ctx
       extend (x, c) = Context . (>| (x, c)) . defs
       evalBinOp op a b = case (eval ctx a, eval ctx b) of
-        (CNum a ty@TInt {}, CNum b TInt {}) ->
+        (Item.Num a ty@TInt {}, Item.Num b TInt {}) ->
           let c = pack . show $ read (unpack a) `op` read (unpack b)
-           in CNum c ty
+           in Item.Num c ty
         _ -> error "unreachable"
    in trace ("evaluating: " ++ show e) $ case e of
-        Num n ty -> CNum n ty
+        Num n ty -> Item.Num n ty
         Var v ty -> get v
         Add a b -> evalBinOp (+) a b
         Sub a b -> evalBinOp (-) a b
@@ -60,11 +42,11 @@ eval ctx e =
         Match xs arms -> case msum $ uncurry (match ctx xs) <$> arms of
           Just c -> c
           Nothing -> error "non-exhaustive match"
-        Lambda (x, tx) b -> CLambda (x, tx) b
+        Lambda (x, tx) b -> Item.Lambda (x, tx) b
         App ty f x -> case eval ctx f of
-          CLambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
+          Item.Lambda (x', tx) b -> ty <$ with (x', eval ctx x) ctx eval b
           _ -> error "unreachable"
-        Data c ty xs -> CData c ty (eval ctx <$> xs)
+        Data c ty xs -> Item.Data c ty (eval ctx <$> xs)
 
 match :: Context (Item Type) -> [Expr Type] -> [Expr Type] -> Expr Type -> Maybe (Item Type)
 match ctx [] [] b = Just $ eval ctx b
@@ -77,7 +59,7 @@ match ctx (x : xs) (p : ps) b =
           | otherwise -> Nothing
           where
             eq :: Item Type -> Item Type -> Bool
-            eq (CNum a _) (CNum b _) = a == b
+            eq (Item.Num a _) (Item.Num b _) = a == b
             eq _ _ = error "unreachable"
         Tup {} -> error "todo"
         List {} -> error "todo"
@@ -94,9 +76,9 @@ extend (x, c) = Context . (>| (x, c)) . defs
 
 unItem :: Item Type -> Expr Type
 unItem = \case
-  CLambda x b -> Lambda x b
-  CNum n ty -> Num n ty
-  CData c td xs -> Data c td (unItem <$> xs)
+  Item.Lambda x b -> Lambda x b
+  Item.Num n ty -> Num n ty
+  Item.Data c td xs -> Data c td (unItem <$> xs)
 
 lookup :: Context (Item Type) -> Text -> Item Type
 lookup ctx = fromMaybe (error $ show ctx) . flip OMap.lookup (defs ctx)
@@ -116,26 +98,26 @@ spec = describe "Eval" $ do
     eval
       emptyContext
       (Add (Num "1" (TInt s0)) (Add (Num "2" (TInt s2)) (Num "3" (TInt s3))))
-      `shouldBe` CNum "6" (TInt s0)
+      `shouldBe` Item.Num "6" (TInt s0)
 
   it "evaluates application" $ do
-    let ctx = [("f", CLambda ("x", TInt s0) (Add (Var "x" (TInt s1)) (Var "x" (TInt s2))))]
+    let ctx = [("f", Item.Lambda ("x", TInt s0) (Add (Var "x" (TInt s1)) (Var "x" (TInt s2))))]
     eval
       (Context $ OMap.fromList ctx)
       (App (TInt s0) (Var "f" (TInt s1 :-> TInt s2)) (Num "2" (TInt s3)))
-      `shouldBe` CNum "4" (TInt s0)
+      `shouldBe` Item.Num "4" (TInt s0)
 
   it "evaluates numeric match" $ do
     eval
       emptyContext
       (Match [Num "1" (TInt s0)] [([Num "1" (TInt s1)], Num "2" (TInt s2))])
-      `shouldBe` CNum "2" (TInt s2)
+      `shouldBe` Item.Num "2" (TInt s2)
 
   it "evaluates binding match" $ do
     eval
       emptyContext
       (Match [Num "2" (TInt s0)] [([Var "x" (TInt s1)], Var "x" (TInt s2))])
-      `shouldBe` CNum "2" (TInt s0)
+      `shouldBe` Item.Num "2" (TInt s0)
 
   it "evaluates multi parameter match" $ do
     eval
@@ -144,7 +126,7 @@ spec = describe "Eval" $ do
           [Num "1" (TInt s0), Num "2" (TInt s1)]
           [([Num "1" (TInt s2), Var "x" (TInt s3)], Var "x" (TInt s4))]
       )
-      `shouldBe` CNum "2" (TInt s1)
+      `shouldBe` Item.Num "2" (TInt s1)
 
   it "evaluates multi branch match" $ do
     eval
@@ -155,7 +137,7 @@ spec = describe "Eval" $ do
             ([Num "2" (TInt s3)], Num "3" (TInt s4))
           ]
       )
-      `shouldBe` CNum "3" (TInt s4)
+      `shouldBe` Item.Num "3" (TInt s4)
 
 emptyContext = Context {defs = OMap.empty}
 

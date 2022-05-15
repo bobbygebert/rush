@@ -29,11 +29,12 @@ import IR
 import Infer
 import qualified Rush.Eval as Rush
 import qualified Rush.Expression as Rush
+import qualified Rush.Item
 import qualified Rush.Type as Rush
 import Span
 import Prelude hiding (const, init, lookup)
 
-ir :: [Rush.Named Rush.Type] -> [IR.Named Type]
+ir :: [Rush.Item.Named Rush.Type] -> [IR.Named Type]
 ir =
   (\a -> trace ("generated: \n" ++ unlines (show <$> a)) a)
     . generate
@@ -45,7 +46,7 @@ ir =
   where
     unpack = Functor.const $ gets $ reverse . definitions
     closeOver [] = return ()
-    closeOver (c@(Rush.Named n e) : cs) = do
+    closeOver (c@(Rush.Item.Named n e) : cs) = do
       ty <- closeOverItem c
       withGlobal [(n, ty)] $ closeOver cs
 
@@ -201,14 +202,14 @@ init = \case
     pure tf
   Rush.Kind s -> pure Kind
 
-closeOverItem :: Rush.Named Rush.Type -> Build Type
-closeOverItem (Rush.Named name c) = ty'
+closeOverItem :: Rush.Item.Named Rush.Type -> Build Type
+closeOverItem (Rush.Item.Named name c) = ty'
   where
     ty' = (typeOf <$>) . define name =<< c'
     c' = case c of
-      Rush.CNum n ty -> IR.CNum n <$> init ty
-      Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((item <$>) . closeOverExpr c . Rush.unItem) xs
-      Rush.CLambda (x, tx) b -> do
+      Rush.Item.Num n ty -> IR.CNum n <$> init ty
+      Rush.Item.Data c ty xs -> IR.CData c <$> init ty <*> mapM ((item <$>) . closeOverExpr c . Rush.unItem) xs
+      Rush.Item.Lambda (x, tx) b -> do
         tx' <- init tx
         tb' <- init (Rush.typeOf b)
         let tf = TFn TUnit tx' tb'

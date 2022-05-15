@@ -33,6 +33,7 @@ library
       Rush.Eval
       Rush.Expression
       Rush.Infer
+      Rush.Item
       Rush.Monomorphize
       Rush.Parser
       Rush.Type

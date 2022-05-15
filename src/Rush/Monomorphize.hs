@@ -18,6 +18,8 @@ import Debug.Trace
 import Infer
 import Rush.Eval
 import Rush.Expression
+import Rush.Item (Item, Named (..))
+import qualified Rush.Item as Item
 import Rush.Type
 import Prelude hiding (lookup)
 
@@ -61,9 +63,9 @@ monomorphize =
 
 monomorphizeItem :: Item Type -> Monomorphize (Item Type)
 monomorphizeItem constant = case constant of
-  CNum {} -> pure constant
-  CData {} -> pure constant
-  CLambda (x, tx) b -> CLambda (x, tx) <$> with [(x, tx)] (monomorphizeExpr b)
+  Item.Num {} -> pure constant
+  Item.Data {} -> pure constant
+  Item.Lambda (x, tx) b -> Item.Lambda (x, tx) <$> with [(x, tx)] (monomorphizeExpr b)
 
 monomorphizeExpr :: Expr Type -> Monomorphize (Expr Type)
 monomorphizeExpr e = case e of

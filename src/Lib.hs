@@ -20,6 +20,7 @@ import qualified Rush.Ast as Ast
 import Rush.Desugar
 import Rush.Eval
 import Rush.Infer
+import Rush.Item
 import Rush.Monomorphize (monomorphize)
 import Rush.Parser (Parsed, parseModule)
 import Rush.Type
