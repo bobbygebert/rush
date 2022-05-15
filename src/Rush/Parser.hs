@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -10,7 +12,6 @@ import Data.Function
 import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
-import qualified Rush.Ast as Ast
 import Rush.Expression
 import Rush.Type
 import Span
@@ -25,7 +26,13 @@ class Spanned a
 
 type Parser = Parsec Void Text
 
-parseModule :: String -> Text -> Either Text [Ast.Ast Span]
+data Parsed c
+  = Constant (Text, c) (Expr c)
+  | Fn (Text, c) [([Expr c], Expr c)]
+  | Type (Text, c) [(Text, c, [Type])]
+  deriving (Show, Eq, Foldable, Functor)
+
+parseModule :: String -> Text -> Either Text [Parsed Span]
 parseModule path source = case result of
   Left error -> Left $ pack $ errorBundlePretty error
   Right a -> Right a
@@ -36,24 +43,24 @@ parseModule path source = case result of
         path
         source
 
-item :: Parser (Ast.Ast Span)
+item :: Parser (Parsed Span)
 item = try constant <|> try fn <|> try typeDef
 
-constant :: Parser (Ast.Ast Span)
-constant = Ast.Constant <$> (spanned lowerIdent <* eq) <*> expr
+constant :: Parser (Parsed Span)
+constant = Constant <$> (spanned lowerIdent <* eq) <*> expr
 
-fn :: Parser (Ast.Ast Span)
+fn :: Parser (Parsed Span)
 fn = do
   (f, s) <- lookAhead (spanned lowerIdent)
   arms <- (:) <$> arm f <*> many (try $ newline *> arm f)
-  return $ Ast.Fn (f, s) arms
+  return $ Fn (f, s) arms
   where
     arm f = do
       string f *> hspace
       (,) <$> pats <*> (eq *> expr)
 
-typeDef :: Parser (Ast.Ast Span)
-typeDef = Ast.Type <$> (spanned upperIdent <* eq) <*> (constructor `sepBy1` sep)
+typeDef :: Parser (Parsed Span)
+typeDef = Type <$> (spanned upperIdent <* eq) <*> (constructor `sepBy1` sep)
   where
     constructor = uncurry (,,) <$> spanned (upperIdent <* hspace) <*> (atom `sepBy` hspace)
     sep = (hspace *> char '|') *> hspace
@@ -171,7 +178,7 @@ parseModuleSpec = do
     "parses module with trailing newline"
     $ parseModule testModule "x = 123\n"
       `shouldBe` Right
-        [ Ast.Constant
+        [ Constant
             ("x", span testModule (1, 1) (1, 2))
             (Num "123" (span testModule (1, 5) (1, 8)))
         ]
@@ -182,14 +189,14 @@ fnSpec = do
       "fn with single binder"
       "f x = x"
       as
-      (Ast.Fn ("f", ()) [([Var "x" ()], Var "x" ())])
+      (Fn ("f", ()) [([Var "x" ()], Var "x" ())])
 
   item <* eof
     & parses
       "fn with multiple parameters"
       "f x 123 = x"
       as
-      (Ast.Fn ("f", ()) [([Var "x" (), Num "123" ()], Var "x" ())])
+      (Fn ("f", ()) [([Var "x" (), Num "123" ()], Var "x" ())])
 
   item <* newline <* eof
     & parses
@@ -200,14 +207,14 @@ fnSpec = do
           ]
       )
       as
-      (Ast.Fn ("f", ()) [([Num "1" ()], Num "2" ()), ([Num "2" ()], Num "3" ())])
+      (Fn ("f", ()) [([Num "1" ()], Num "2" ()), ([Num "2" ()], Num "3" ())])
 
   item <* eof
     & parses
       "fn with constructor pattern"
       "f (Pair x y) = x"
       as
-      (Ast.Fn ("f", ()) [([Data "Pair" () [Var "x" (), Var "y" ()]], Var "x" ())])
+      (Fn ("f", ()) [([Data "Pair" () [Var "x" (), Var "y" ()]], Var "x" ())])
 
 appSpec = do
   app <* eof
@@ -229,7 +236,7 @@ constantSpec = do
       "constant number"
       "x = 123"
       as
-      (Ast.Constant ("x", ()) (Num "123" ()))
+      (Constant ("x", ()) (Num "123" ()))
 
 exprSpec = do
   expr <* eof
@@ -273,21 +280,21 @@ typeSpec = do
       "marker type"
       "Marker = Marker"
       as
-      (Ast.Type ("Marker", ()) [("Marker", (), [])])
+      (Type ("Marker", ()) [("Marker", (), [])])
 
   item <* eof
     & parses
       "monomorphic product types"
       "Pair = Pair Int Int"
       as
-      (Ast.Type ("Pair", ()) [("Pair", (), [TInt emptySpan, TInt emptySpan])])
+      (Type ("Pair", ()) [("Pair", (), [TInt emptySpan, TInt emptySpan])])
 
   item <* eof
     & parses
       "monomorphic sum types"
       "MaybeInt = Nothing | Just Int"
       as
-      (Ast.Type ("MaybeInt", ()) [("Nothing", (), []), ("Just", (), [TInt emptySpan])])
+      (Type ("MaybeInt", ()) [("Nothing", (), []), ("Just", (), [TInt emptySpan])])
 
 lowerIdentSpec =
   Hspec.it
@@ -302,11 +309,11 @@ spannedSpec =
 class Plain f where
   plain :: f s -> f ()
 
-instance Plain Ast.Ast where
+instance Plain Parsed where
   plain = \case
-    Ast.Constant (x, _) a -> Ast.Constant (x, ()) (plain a)
-    Ast.Fn (f, _) arms -> Ast.Fn (f, ()) $ bimap (plain <$>) plain <$> arms
-    Ast.Type (n, _) cs -> Ast.Type (n, ()) (plain' <$> cs)
+    Constant (x, _) a -> Constant (x, ()) (plain a)
+    Fn (f, _) arms -> Fn (f, ()) $ bimap (plain <$>) plain <$> arms
+    Type (n, _) cs -> Type (n, ()) (plain' <$> cs)
       where
         plain' (c, _, ts) = (c, (), withSpan emptySpan <$> ts)
 

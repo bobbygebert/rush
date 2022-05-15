@@ -4,12 +4,8 @@
 module Lib (build) where
 
 import Control.Arrow hiding (first)
-import Control.Monad
 import Data.Bifunctor
 import Data.Either (partitionEithers)
-import Data.Function
-import Data.Functor
-import qualified Data.Map as Map
 import Data.Map.Ordered
 import qualified Data.Map.Ordered as OMap
 import Data.Text hiding (filter, unlines)
@@ -20,10 +16,12 @@ import Infer (Context (Context, defs), TypeError)
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
 import Rush.Ast
+import qualified Rush.Ast as Ast
+import Rush.Desugar
 import Rush.Eval
-import Rush.Item as Item
+import Rush.Infer
 import Rush.Monomorphize (monomorphize)
-import Rush.Parser (parseModule)
+import Rush.Parser (Parsed, parseModule)
 import Rush.Type
 import Span
 import System.FilePath
@@ -38,7 +36,7 @@ build path source =
     . reduce
     <$> (inferAndCheck . (desugar <$>) =<< parse path source)
 
-reduce :: [Item.Item Type] -> [Named Type]
+reduce :: [Ast Type] -> [Named Type]
 reduce = reduce' emptyContext . (namedExprs =<<)
   where
     reduce' ctx = \case
@@ -47,19 +45,19 @@ reduce = reduce' emptyContext . (namedExprs =<<)
         where
           expr' = eval ctx expr
           ctx' = Context (defs ctx >| (name, expr'))
-    namedExprs (Item name _ (Item.Expr expr)) = [(name, expr)]
-    namedExprs (Item _ _ Item.Type {}) = []
+    namedExprs (Ast name _ (Ast.Expr expr)) = [(name, expr)]
+    namedExprs (Ast _ _ Ast.Type {}) = []
 
-inferAndCheck :: [Item.Item Span] -> Either [Text] [Item.Item Type]
+inferAndCheck :: [Ast Span] -> Either [Text] [Ast Type]
 inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' primitives
   where
-    inferAndCheck' :: Context Type -> [Item.Item Span] -> [Either TypeError (Item.Item Type)]
+    inferAndCheck' :: Context Type -> [Ast Span] -> [Either TypeError (Ast Type)]
     inferAndCheck' _ [] = []
-    inferAndCheck' context (item : items) = case typeItem context item of
+    inferAndCheck' context (item : items) = case typeAst context item of
       Right item' -> do
         let tys = OMap.fromList $ case value item' of
-              Item.Expr e -> trace ("defining: " ++ show (name item', ty item', value item')) [(name item', ty item')]
-              Item.Type (n, k) cs -> trace ("defining: " ++ unpack n ++ "\n" ++ unlines (show <$> cs)) []
+              Ast.Expr e -> trace ("defining: " ++ show (name item', ty item', value item')) [(name item', ty item')]
+              Ast.Type (n, k) cs -> trace ("defining: " ++ unpack n ++ "\n" ++ unlines (show <$> cs)) []
         let context' =
               Context $
                 constructorTypes item |<> tys |<> defs context
@@ -70,7 +68,7 @@ primitives = Context {defs = OMap.fromList [("Int", Kind emptySpan)]}
 
 emptyContext = Context {defs = OMap.empty}
 
-parse :: String -> Text -> Either [Text] [Ast Span]
+parse :: String -> Text -> Either [Text] [Parsed Span]
 parse path source = first (: []) (parseModule path source)
 
 collect :: [Either err ok] -> Either [err] [ok]

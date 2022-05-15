@@ -16,13 +16,12 @@ import Control.Monad.State
 import Control.Monad.Writer
 import Data.Bifunctor
 import Data.Default
-import Data.Functor
-import Data.List (intercalate, partition)
+import Data.List (partition)
 import qualified Data.Map as Map
 import Data.Map.Ordered
 import qualified Data.Map.Ordered as OMap
 import qualified Data.Set as Set
-import Data.Text hiding (foldr, head, intercalate, partition, tail, unlines, zip)
+import Data.Text hiding (foldr, head, partition, tail, unlines, zip)
 import Debug.Trace
 import Span
 

@@ -29,9 +29,10 @@ library
       Lib
       Monomorphize
       Rush.Ast
+      Rush.Desugar
       Rush.Eval
       Rush.Expression
-      Rush.Item
+      Rush.Infer
       Rush.Monomorphize
       Rush.Parser
       Rush.Type
