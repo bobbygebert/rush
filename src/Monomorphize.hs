@@ -25,10 +25,10 @@ import qualified Data.Set as Set
 import Data.Text hiding (concatMap, filter, foldr, head, init, partition, reverse, tail, unlines, zip)
 import qualified Data.Text.Internal.Fusion.Size as Map
 import Debug.Trace
-import qualified Expression as Rush
 import IR
 import Infer
 import qualified Rush.Eval as Rush
+import qualified Rush.Expression as Rush
 import qualified Rush.Type as Rush
 import Span
 import Prelude hiding (const, init, lookup)

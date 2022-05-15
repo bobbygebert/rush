@@ -15,9 +15,9 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Data.Text
 import Debug.Trace
-import Expression
 import Infer
 import Rush.Eval
+import Rush.Expression
 import Rush.Type
 import Prelude hiding (lookup)
 

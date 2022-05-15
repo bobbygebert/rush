@@ -14,9 +14,9 @@ import qualified Data.Map.Ordered as OMap
 import qualified Data.Set as Set
 import Data.Text hiding (foldr, head, span, unlines, unwords, zip)
 import Debug.Trace
-import Expression hiding (Type)
 import Infer hiding (Type)
 import qualified Infer
+import Rush.Expression hiding (Type)
 import Rush.Type
 import Span
 import Test.Hspec

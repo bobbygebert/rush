@@ -11,7 +11,7 @@ import Data.Function
 import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
-import Expression
+import Rush.Expression
 import Rush.Type
 import Span
 import Test.Hspec (shouldBe)

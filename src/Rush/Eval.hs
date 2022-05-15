@@ -13,8 +13,8 @@ import qualified Data.Map.Ordered as OMap
 import Data.Maybe
 import Data.Text hiding (foldr, foldr1, span)
 import Debug.Trace
-import Expression
 import Infer (Context (Context, defs))
+import Rush.Expression
 import Rush.Type hiding (spec)
 import Span
 import Test.Hspec as Hspec

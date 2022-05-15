@@ -3,7 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
-module Expression (Expr (..), bindings, typeOf) where
+module Rush.Expression (Expr (..), bindings, typeOf) where
 
 import Control.Monad
 import Data.Function

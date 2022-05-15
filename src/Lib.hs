@@ -16,7 +16,6 @@ import qualified Data.Map.Ordered as OMap
 import Data.Text hiding (filter, unlines)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
-import qualified Expression
 import Generate
 import Infer (Context (Context, defs), TypeError)
 import LLVM.Pretty (ppllvm)

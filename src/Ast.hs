@@ -4,7 +4,7 @@
 module Ast (Ast (..)) where
 
 import Data.Text
-import Expression
+import Rush.Expression
 import Rush.Type
 
 data Ast c
