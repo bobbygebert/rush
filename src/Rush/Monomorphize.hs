@@ -5,7 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
-module MonomorphizeNew where
+module Rush.Monomorphize where
 
 import Control.Monad.Reader
 import Control.Monad.State
@@ -15,9 +15,9 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Data.Text
 import Debug.Trace
-import Eval
 import Expression
 import Infer
+import Rush.Eval
 import Type
 import Prelude hiding (lookup)
 

@@ -1,7 +1,7 @@
 import qualified BuildTest
-import qualified Eval
-import qualified Item
-import qualified Parser
+import qualified Rush.Eval as Eval
+import qualified Rush.Item as Item
+import qualified Rush.Parser as Parser
 import Test.Hspec
 
 main :: IO ()

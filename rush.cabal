@@ -24,16 +24,16 @@ source-repository head
 library
   exposed-modules:
       Ast
-      Eval
       Expression
       Generate
       Infer
       IR
-      Item
       Lib
       Monomorphize
-      MonomorphizeNew
-      Parser
+      Rush.Eval
+      Rush.Item
+      Rush.Monomorphize
+      Rush.Parser
       Span
       Type
   other-modules:

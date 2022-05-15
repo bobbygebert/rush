@@ -16,15 +16,15 @@ import qualified Data.Map.Ordered as OMap
 import Data.Text hiding (filter, unlines)
 import Data.Text.Lazy (toStrict)
 import Debug.Trace
-import Eval
 import qualified Expression
 import Generate
 import Infer (Context (Context, defs), TypeError)
-import Item
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
-import MonomorphizeNew (monomorphize)
-import Parser (parseModule)
+import Rush.Eval
+import Rush.Item as Item
+import Rush.Monomorphize (monomorphize)
+import Rush.Parser (parseModule)
 import Span
 import System.FilePath
 import Type

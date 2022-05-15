@@ -3,7 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Item (Constructor (..), Term (..), Item (..), desugar, typeItem, constructors, constructorTypes, spec) where
+module Rush.Item (Constructor (..), Term (..), Item (..), desugar, typeItem, constructors, constructorTypes, spec) where
 
 import qualified Ast
 import Control.Monad
@@ -99,24 +99,24 @@ freshNames :: [Text]
 freshNames = pack <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])
 
 typeItem :: Context Type -> Item Span -> Either TypeError (Item Type)
-typeItem context (Item.Item n s i) =
+typeItem context (Item n s i) =
   let infer = runInfer freshTypeVars Definitions {local = Context OMap.empty, global = context}
       solve (item, cs) = trace ("solving: " ++ show item ++ "\n" ++ unlines (show <$> cs)) flip apply item <$> solveConstraints cs
-      normalize item@(Item.Item _ ty _) = trace ("solved: " ++ show (apply (Substitutions ss) item)) apply (Substitutions ss) item
+      normalize item@(Item _ ty _) = trace ("solved: " ++ show (apply (Substitutions ss) item)) apply (Substitutions ss) item
         where
           tvs = Set.toList (freeTypeVars ty)
           ss = Map.fromList $ zip tvs (freshTypeVars <*> repeat (spanOf ty))
    in (\x -> trace ("typed: " ++ show x) x) . (normalize <$>) . solve <=< infer $ do
         case i of
-          Item.Expr e -> do
+          Expr e -> do
             ty <- fresh s
             e' <- with [(n, ty)] $ typeExpr e
             ensure (ty :~ typeOf e')
-            return . Item.Item n ty . Item.Expr $ e'
-          Item.Type (t, s2) cs -> do
-            let ty = TData n s2 (cs <&> (\(Item.Constructor c s3 ts) -> (c, s3, ts)))
-            let cs' = cs <&> (\(Item.Constructor c _ ts) -> Item.Constructor c ty ts)
-            return $ Item.Item n (Kind s1) (Item.Type (t, Kind s1) cs')
+            return . Item n ty . Expr $ e'
+          Type (t, s2) cs -> do
+            let ty = TData n s2 (cs <&> (\(Constructor c s3 ts) -> (c, s3, ts)))
+            let cs' = cs <&> (\(Constructor c _ ts) -> Constructor c ty ts)
+            return $ Item n (Kind s1) (Type (t, Kind s1) cs')
 
 typeExpr :: Expr Span -> Infer Type (Expr Type)
 typeExpr e = case e of
@@ -227,30 +227,30 @@ spec = describe "Type" $ do
   describe "typeItem" $ do
     it "infers type of Num to be TInt" $ do
       let c = Context OMap.empty
-      let i = Item "n" s0 (Item.Expr $ Num "1" s1)
-      let o = Item "n" (TInt s0) (Item.Expr $ Num "1" (TInt s1))
+      let i = Item "n" s0 (Expr $ Num "1" s1)
+      let o = Item "n" (TInt s0) (Expr $ Num "1" (TInt s1))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Var from Context" $ do
       let c = Context $ OMap.fromList [("v", TInt s1)]
-      let i = Item "n" s0 (Item.Expr $ Var "v" s1)
-      let o = Item "n" (TInt s0) (Item.Expr $ Var "v" (TInt s1))
+      let i = Item "n" s0 (Expr $ Var "v" s1)
+      let o = Item "n" (TInt s0) (Expr $ Var "v" (TInt s1))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Add Expression" $ do
       let c = Context OMap.empty
-      let i = Item "n" s0 (Item.Expr $ Add (Num "1" s1) (Num "2" s2))
-      let o = Item "n" (TInt s0) (Item.Expr $ Add (Num "1" (TInt s1)) (Num "2" (TInt s2)))
+      let i = Item "n" s0 (Expr $ Add (Num "1" s1) (Num "2" s2))
+      let o = Item "n" (TInt s0) (Expr $ Add (Num "1" (TInt s1)) (Num "2" (TInt s2)))
       typeItem c i `shouldBe` Right o
 
     it "infers type of Lambda Expression" $ do
       let c = Context OMap.empty
-      let i = Item "f" s0 (Item.Expr $ Lambda ("x", s1) (Num "2" s2))
+      let i = Item "f" s0 (Expr $ Lambda ("x", s1) (Num "2" s2))
       let o =
             Item
               "f"
               (TVar "a" s0 :-> TInt s0)
-              ( Item.Expr $
+              ( Expr $
                   Lambda
                     ("x", TVar "a" s1)
                     (Num "2" (TInt s2))
@@ -259,12 +259,12 @@ spec = describe "Type" $ do
 
     it "infers type of Match Expression" $ do
       let c = Context $ OMap.fromList [("x", TInt s4)]
-      let i = Item "f" s0 (Item.Expr $ Match [Var "x" s1] [([Num "1" s2], Num "2" s3)])
+      let i = Item "f" s0 (Expr $ Match [Var "x" s1] [([Num "1" s2], Num "2" s3)])
       let o =
             Item
               "f"
               (TInt s0)
-              ( Item.Expr $
+              ( Expr $
                   Match
                     [Var "x" (TInt s1)]
                     [([Num "1" (TInt s2)], Num "2" (TInt s3))]
@@ -277,14 +277,14 @@ spec = describe "Type" $ do
             Item
               "f"
               s0
-              ( Item.Expr $
+              ( Expr $
                   Match [Tup [Num "1" s1]] [([Tup [Num "1" s2]], Num "2" s3)]
               )
       let o =
             Item
               "f"
               (TInt s0)
-              ( Item.Expr $
+              ( Expr $
                   Match
                     [Tup [Num "1" (TInt s1)]]
                     [([Tup [Num "1" (TInt s2)]], Num "2" (TInt s3))]
@@ -297,14 +297,14 @@ spec = describe "Type" $ do
             Item
               "f"
               s0
-              ( Item.Expr $
+              ( Expr $
                   Lambda ("g", s1) (App s2 (Var "g" s3) (Num "123" s4))
               )
       let o =
             Item
               "f"
               ((TInt s0 :-> TVar "a" s0) :-> TVar "a" s0)
-              ( Item.Expr $
+              ( Expr $
                   Lambda
                     ("g", TInt s1 :-> TVar "a" s1)
                     ( App
@@ -321,14 +321,14 @@ spec = describe "Type" $ do
             Item
               "f"
               s0
-              ( Item.Expr $
+              ( Expr $
                   Lambda ("x", s1) (Lambda ("y", s2) (App s3 (Var "g" s4) (Tup [Var "x" s5, Var "y" s6])))
               )
       let o =
             Item
               "f"
               (TInt s0 :-> TInt s0 :-> TInt s0)
-              ( Item.Expr $
+              ( Expr $
                   Lambda
                     ("x", TInt s1)
                     ( Lambda

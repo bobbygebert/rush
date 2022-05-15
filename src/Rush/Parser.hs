@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Parser where
+module Rush.Parser where
 
 import qualified Ast
 import Control.Monad
