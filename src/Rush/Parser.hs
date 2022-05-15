@@ -3,7 +3,6 @@
 
 module Rush.Parser where
 
-import qualified Ast
 import Control.Monad
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor
@@ -11,6 +10,7 @@ import Data.Function
 import qualified Data.Set as Set
 import Data.Text hiding (foldl, span)
 import Data.Void
+import qualified Rush.Ast as Ast
 import Rush.Expression
 import Rush.Type
 import Span

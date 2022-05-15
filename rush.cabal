@@ -23,12 +23,12 @@ source-repository head
 
 library
   exposed-modules:
-      Ast
       Generate
       Infer
       IR
       Lib
       Monomorphize
+      Rush.Ast
       Rush.Eval
       Rush.Expression
       Rush.Item

@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 
-module Ast (Ast (..)) where
+module Rush.Ast (Ast (..)) where
 
 import Data.Text
 import Rush.Expression

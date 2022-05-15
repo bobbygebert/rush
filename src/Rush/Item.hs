@@ -5,7 +5,6 @@
 
 module Rush.Item (Constructor (..), Term (..), Item (..), desugar, typeItem, constructors, constructorTypes, spec) where
 
-import qualified Ast
 import Control.Monad
 import Data.Functor
 import qualified Data.Map as Map
@@ -16,10 +15,11 @@ import Data.Text hiding (foldr, head, span, unlines, unwords, zip)
 import Debug.Trace
 import Infer hiding (Type)
 import qualified Infer
+import qualified Rush.Ast as Ast
 import Rush.Expression hiding (Type)
 import Rush.Type
 import Span
-import Test.Hspec
+import Test.Hspec (SpecWith, describe, it, shouldBe)
 import Prelude hiding (lookup, span)
 
 data Item s = Item {name :: Text, ty :: s, value :: Term s}

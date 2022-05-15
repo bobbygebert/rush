@@ -3,7 +3,6 @@
 
 module Lib (build) where
 
-import Ast
 import Control.Arrow hiding (first)
 import Control.Monad
 import Data.Bifunctor
@@ -20,6 +19,7 @@ import Generate
 import Infer (Context (Context, defs), TypeError)
 import LLVM.Pretty (ppllvm)
 import Monomorphize (ir)
+import Rush.Ast
 import Rush.Eval
 import Rush.Item as Item
 import Rush.Monomorphize (monomorphize)
