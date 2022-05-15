@@ -66,7 +66,7 @@ buildModule name =
 
 declareItem :: Rush.Named Rush.Type -> Build (Rush.Named Rush.Type)
 declareItem item@(Rush.Named name constant) =
-  item <$ declare name (Rush.typeOf (Rush.unConst constant))
+  item <$ declare name (Rush.typeOf (Rush.unItem constant))
 
 buildItem :: Rush.Named Rush.Type -> Build ()
 buildItem item@(Rush.Named name constant) =

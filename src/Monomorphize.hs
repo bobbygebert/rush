@@ -46,7 +46,7 @@ ir =
     unpack = Functor.const $ gets $ reverse . definitions
     closeOver [] = return ()
     closeOver (c@(Rush.Named n e) : cs) = do
-      ty <- closeOverConstant c
+      ty <- closeOverItem c
       withGlobal [(n, ty)] $ closeOver cs
 
 type Build = InferT BuildState Type (Definitions Type)
@@ -70,8 +70,8 @@ runBuild =
 type Generate = InferT GenerateState Type (Definitions Type)
 
 data GenerateState = GenerateState
-  { generated :: OMap (Text, Type) (IR.Constant Type),
-    templates :: Context (IR.Constant Type),
+  { generated :: OMap (Text, Type) (IR.Item Type),
+    templates :: Context (IR.Item Type),
     numbers :: [Text]
   }
   deriving (Show)
@@ -83,7 +83,7 @@ instance TypeVarStream GenerateState Type where
     put $ state {numbers = ns}
     return $ TVar n
 
-runGenerate :: Context Type -> Context (IR.Constant Type) -> Generate [IR.Named Type] -> [IR.Named Type]
+runGenerate :: Context Type -> Context (IR.Item Type) -> Generate [IR.Named Type] -> [IR.Named Type]
 runGenerate types templates =
   solve
     . either (error . show) id
@@ -112,7 +112,7 @@ generate cs =
         IR.CData {} -> pure c
         IR.CFn tc (x, tx) b -> IR.CFn tc (x, tx) <$> monomorphize (Set.fromList [name, x]) b
     noLocals = Set.empty
-    types = OMap.fromList $ (\(IR.Named n c) -> (n, typeOf $ unConst c)) <$> cs
+    types = OMap.fromList $ (\(IR.Named n c) -> (n, typeOf $ unItem c)) <$> cs
     (templates, targets) =
       first
         (OMap.fromList . fmap (\(IR.Named n c) -> (n, c)))
@@ -121,7 +121,7 @@ generate cs =
       partition
         ( (/= 0) . Set.size
             . foldr (Set.union . freeTypeVars) Set.empty
-            . (\(IR.Named _ c) -> unConst c)
+            . (\(IR.Named _ c) -> unItem c)
         )
 
 monomorphize :: Set.Set Text -> Expr Type -> Generate (Expr Type)
@@ -158,8 +158,8 @@ extract name ty locals defaultExpr
       Nothing -> pure defaultExpr
       Just c -> do
         state <- get
-        c' <- monomorphize Set.empty (unConst c)
-        let ty' = typeOf $ unConst c
+        c' <- monomorphize Set.empty (unItem c)
+        let ty' = typeOf $ unItem c
         let mangled = "_" <> pack (show ty') <> "_" <> name
         ensure $ ty' :~ ty
         put
@@ -175,7 +175,7 @@ solve (items, constraints) =
     either (error . show) id $
       solveConstraints constraints
 
-template :: Text -> Generate (Maybe (IR.Constant Type))
+template :: Text -> Generate (Maybe (IR.Item Type))
 template v = do
   Context templates <- gets templates
   return $ OMap.lookup v templates
@@ -201,13 +201,13 @@ init = \case
     pure tf
   Rush.Kind s -> pure Kind
 
-closeOverConstant :: Rush.Named Rush.Type -> Build Type
-closeOverConstant (Rush.Named name c) = ty'
+closeOverItem :: Rush.Named Rush.Type -> Build Type
+closeOverItem (Rush.Named name c) = ty'
   where
     ty' = (typeOf <$>) . define name =<< c'
     c' = case c of
       Rush.CNum n ty -> IR.CNum n <$> init ty
-      Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((const <$>) . closeOverExpr c . Rush.unConst) xs
+      Rush.CData c ty xs -> IR.CData c <$> init ty <*> mapM ((item <$>) . closeOverExpr c . Rush.unItem) xs
       Rush.CLambda (x, tx) b -> do
         tx' <- init tx
         tb' <- init (Rush.typeOf b)
@@ -366,11 +366,11 @@ freshName = do
 freshVar :: Build Type
 freshVar = TVar <$> freshName
 
-define :: Text -> IR.Constant Type -> Build (Expr Type)
+define :: Text -> IR.Item Type -> Build (Expr Type)
 define name val = trace ("defining: " ++ show (name, val)) $ do
   state <- get
   put state {definitions = IR.Named name val : definitions state}
-  return $ Var name (typeOf $ unConst val)
+  return $ Var name (typeOf $ unItem val)
 
 freshNames :: [Text]
 freshNames = pack . ('#' :) <$> ([1 ..] >>= flip replicateM ['a' .. 'z'])

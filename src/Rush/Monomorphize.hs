@@ -24,8 +24,8 @@ import Prelude hiding (lookup)
 type Monomorphize = InferT MonomorphizeState Type (Definitions Type)
 
 data MonomorphizeState = MonomorphizeState
-  { definitions :: Context (Constant Type),
-    templates :: Context (Constant Type),
+  { definitions :: Context (Item Type),
+    templates :: Context (Item Type),
     names :: [Text]
   }
   deriving (Show)
@@ -50,17 +50,17 @@ monomorphize =
     monomorphize' :: [Named Type] -> Monomorphize [Named Type]
     monomorphize' [] = gets ((uncurry Named <$>) . OMap.assocs . defs . definitions)
     monomorphize' ((Named name constant) : cs)
-      | Set.size (freeTypeVars (unConst constant)) > 0 = trace ("templating: " ++ unpack name) $ do
+      | Set.size (freeTypeVars (unItem constant)) > 0 = trace ("templating: " ++ unpack name) $ do
         ty <- mkTemplate name constant
         with [(name, ty)] $ monomorphize' cs
       | otherwise = trace ("monomorphizing: " ++ unpack name) $ do
         ty <-
           define name
-            =<< with [(name, typeOf $ unConst constant)] (monomorphizeConstant constant)
+            =<< with [(name, typeOf $ unItem constant)] (monomorphizeItem constant)
         with [(name, ty)] $ monomorphize' cs
 
-monomorphizeConstant :: Constant Type -> Monomorphize (Constant Type)
-monomorphizeConstant constant = case constant of
+monomorphizeItem :: Item Type -> Monomorphize (Item Type)
+monomorphizeItem constant = case constant of
   CNum {} -> pure constant
   CData {} -> pure constant
   CLambda (x, tx) b -> CLambda (x, tx) <$> with [(x, tx)] (monomorphizeExpr b)
@@ -109,20 +109,20 @@ instantiateTemplate name ty = do
     else do
       let partialInstance = run $ do
             template <- instantiate $ fromJust $ OMap.lookup name $ defs $ templates s
-            ensure $ typeOf (unConst template) :~ ty
+            ensure $ typeOf (unItem template) :~ ty
             pure template
-      define mangled =<< with [(mangled, ty)] (monomorphizeConstant partialInstance)
+      define mangled =<< with [(mangled, ty)] (monomorphizeItem partialInstance)
       pure $ Var mangled ty
   where
     isDefined name = isJust . tryLookup name
     tryLookup :: Text -> Definitions Type -> Maybe Type
     tryLookup name = OMap.lookup name . defs . locals
 
-mkTemplate :: Name -> Constant Type -> Monomorphize Type
-mkTemplate n c = state $ \s -> (typeOf $ unConst c, s {templates = extend n c (templates s)})
+mkTemplate :: Name -> Item Type -> Monomorphize Type
+mkTemplate n c = state $ \s -> (typeOf $ unItem c, s {templates = extend n c (templates s)})
 
-define :: Text -> Constant Type -> Monomorphize Type
-define n c = state $ \s -> (typeOf $ unConst c, s {definitions = extend n c (definitions s)})
+define :: Text -> Item Type -> Monomorphize Type
+define n c = state $ \s -> (typeOf $ unItem c, s {definitions = extend n c (definitions s)})
 
 freshNames :: [Text]
 freshNames = pack . show <$> [0 ..]

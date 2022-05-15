@@ -20,22 +20,22 @@ import Span
 import Text.PrettyPrint
 import Prelude hiding (concat, const, (++), (<>))
 
-data Constant t
+data Item t
   = CNum Text t
-  | CData Text t [Constant t]
+  | CData Text t [Item t]
   | CFn t (Text, t) (Expr t)
   deriving (Eq, Functor, Foldable)
 
-instance (Show t) => Show (Constant t) where
+instance (Show t) => Show (Item t) where
   show = \case
     CNum n _ -> unpack n
     CData n ty xs ->
       show $
-        Data n ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unConst <$> xs))
+        Data n ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unItem <$> xs))
     CFn tc (x, tx) b ->
       show tc ++ " (" ++ unpack x ++ ": " ++ show tx ++ ") -> " ++ show b
 
-data Named t = Named Text (Constant t)
+data Named t = Named Text (Item t)
   deriving (Show, Eq, Functor)
 
 data Type
@@ -195,17 +195,17 @@ instance Unify Type where
   isVar v (TVar tv) = v == tv
   isVar _ _ = False
 
-unConst :: Constant t -> Expr t
-unConst = \case
+unItem :: Item t -> Expr t
+unItem = \case
   CFn tc x b -> Fn tc x b
   CNum n ty -> Num n ty
   CData c ty fs ->
-    Data c ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unConst <$> fs))
+    Data c ty (OMap.fromList $ zip (pack . show <$> [0 ..]) (unItem <$> fs))
 
-const :: Expr t -> Constant t
-const = \case
+item :: Expr t -> Item t
+item = \case
   Fn tc x b -> CFn tc x b
-  Data c ty xs -> CData c ty (const . snd <$> OMap.assocs xs)
+  Data c ty xs -> CData c ty (item . snd <$> OMap.assocs xs)
   Num n ty -> CNum n ty
   _ -> error "unreachable"
 

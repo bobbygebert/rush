@@ -38,7 +38,7 @@ build path source =
     . reduce
     <$> (inferAndCheck . (desugar <$>) =<< parse path source)
 
-reduce :: [Item Type] -> [Named Type]
+reduce :: [Item.Item Type] -> [Named Type]
 reduce = reduce' emptyContext . (namedExprs =<<)
   where
     reduce' ctx = \case
@@ -50,10 +50,10 @@ reduce = reduce' emptyContext . (namedExprs =<<)
     namedExprs (Item name _ (Item.Expr expr)) = [(name, expr)]
     namedExprs (Item _ _ Item.Type {}) = []
 
-inferAndCheck :: [Item Span] -> Either [Text] [Item Type]
+inferAndCheck :: [Item.Item Span] -> Either [Text] [Item.Item Type]
 inferAndCheck = collect . fmap (first (pack . show)) . inferAndCheck' primitives
   where
-    inferAndCheck' :: Context Type -> [Item Span] -> [Either TypeError (Item Type)]
+    inferAndCheck' :: Context Type -> [Item.Item Span] -> [Either TypeError (Item.Item Type)]
     inferAndCheck' _ [] = []
     inferAndCheck' context (item : items) = case typeItem context item of
       Right item' -> do

@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
-module Rush.Eval (eval, spec, unConst, Constant (..), Named (..)) where
+module Rush.Eval (eval, spec, unItem, Item (..), Named (..)) where
 
 import Control.Monad (msum)
 import qualified Data.Map as Map
@@ -20,16 +20,16 @@ import Span
 import Test.Hspec as Hspec
 import Prelude hiding (lookup, span)
 
-data Constant t
+data Item t
   = CNum Text t
-  | CData Text t [Constant t]
+  | CData Text t [Item t]
   | CLambda (Text, t) (Expr t)
   deriving (Show, Eq, Functor, Foldable)
 
-data Named t = Named Text (Constant t)
+data Named t = Named Text (Item t)
   deriving (Show, Eq, Functor, Foldable)
 
-instance Traversable Constant where
+instance Traversable Item where
   traverse f (CNum n ty) = CNum n <$> f ty
   traverse f (CData c ty xs) = CData c <$> f ty <*> traverse (traverse f) xs
   traverse f (CLambda (x, tx) b) = CLambda . (x,) <$> f tx <*> traverse f b
@@ -37,7 +37,7 @@ instance Traversable Constant where
 instance Traversable Named where
   traverse f (Named n c) = Named n <$> traverse f c
 
-eval :: Context (Constant Type) -> Expr Type -> Constant Type
+eval :: Context (Item Type) -> Expr Type -> Item Type
 eval ctx e =
   let get = lookup ctx
       extend (x, c) = Context . (>| (x, c)) . defs
@@ -66,7 +66,7 @@ eval ctx e =
           _ -> error "unreachable"
         Data c ty xs -> CData c ty (eval ctx <$> xs)
 
-match :: Context (Constant Type) -> [Expr Type] -> [Expr Type] -> Expr Type -> Maybe (Constant Type)
+match :: Context (Item Type) -> [Expr Type] -> [Expr Type] -> Expr Type -> Maybe (Item Type)
 match ctx [] [] b = Just $ eval ctx b
 match ctx (x : xs) (p : ps) b =
   let x' = eval ctx x
@@ -76,7 +76,7 @@ match ctx (x : xs) (p : ps) b =
           | eval ctx (Num n ty) `eq` x' -> match ctx xs ps b
           | otherwise -> Nothing
           where
-            eq :: Constant Type -> Constant Type -> Bool
+            eq :: Item Type -> Item Type -> Bool
             eq (CNum a _) (CNum b _) = a == b
             eq _ _ = error "unreachable"
         Tup {} -> error "todo"
@@ -92,13 +92,13 @@ with (x, c) ctx f = f (extend (x, c) ctx)
 extend :: (Text, c) -> Context c -> Context c
 extend (x, c) = Context . (>| (x, c)) . defs
 
-unConst :: Constant Type -> Expr Type
-unConst = \case
+unItem :: Item Type -> Expr Type
+unItem = \case
   CLambda x b -> Lambda x b
   CNum n ty -> Num n ty
-  CData c td xs -> Data c td (unConst <$> xs)
+  CData c td xs -> Data c td (unItem <$> xs)
 
-lookup :: Context (Constant Type) -> Text -> Constant Type
+lookup :: Context (Item Type) -> Text -> Item Type
 lookup ctx = fromMaybe (error $ show ctx) . flip OMap.lookup (defs ctx)
 
 {-
